@@ -515,7 +515,7 @@ export const MEALS = [
     protein: 15, carbs: 30, fat: 8, fiber: 4, calcium: 80, iron: 2, potassium: 300, vitaminD: 0, sodium: 250
   },
   {
-    id: "d-chili",
+    id: "d-chili-simple",
     name: "Simple chili",
     slot: "dinner",
     blurb: "A simple, reliable dinner.",
