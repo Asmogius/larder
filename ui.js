@@ -389,58 +389,164 @@ function renderMeals() {
       resultEl.textContent = 'Please paste a URL or recipe text.';
       return;
     }
-    // Basic paste fallback + schema.org stub (P1 #7)
-    let name = 'Imported recipe';
-    let ingredients = [];
-    if (text.startsWith('http')) {
-      resultEl.innerHTML = `<p>URL detected. Attempting to fetch schema.org/Recipe (may be blocked by CORS)…</p>`;
-      try {
-        const res = await fetch(text);
-        const html = await res.text();
-        const jsonLdMatch = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
-        if (jsonLdMatch) {
-          const data = JSON.parse(jsonLdMatch[1]);
-          const recipe = Array.isArray(data) ? data.find(d => d['@type'] === 'Recipe') : data;
-          if (recipe && recipe.name) {
-            name = recipe.name;
-            ingredients = (recipe.recipeIngredient || []).slice(0, 10).map(i => ({ name: String(i), qty: 1, unit: '' }));
-            resultEl.innerHTML = `<p>Found schema.org Recipe: <strong>${name}</strong> with ${ingredients.length} ingredients.</p>`;
-          }
-        }
-      } catch (e) {
-        resultEl.innerHTML += `<p>Fetch failed (CORS or network). Using name from URL.</p>`;
-        name = text.split('/').pop()?.replace(/[-_]/g, ' ') || name;
-      }
-    } else {
-      // Improved paste parser: detect ingredients and steps sections
-      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-      name = lines[0] || name;
-      let inIngredients = false, inSteps = false;
-      const steps = [];
-      ingredients = [];
-      lines.slice(1).forEach(line => {
-        const lower = line.toLowerCase();
-        if (lower.includes('ingredient')) { inIngredients = true; inSteps = false; return; }
-        if (lower.includes('instruction') || lower.includes('direction') || lower.includes('step')) { inSteps = true; inIngredients = false; return; }
-        if (inSteps || /^\d+\./.test(line)) steps.push(line.replace(/^\d+\.\s*/, ''));
-        else if (inIngredients || /\d/.test(line)) {
-          const qtyMatch = line.match(/^(\d+\.?\d*)\s*(\w+)?\s+(.*)/);
-          ingredients.push({
-            name: qtyMatch ? qtyMatch[3] : line.replace(/^\d+[\s\w]*\s*/, ''),
-            qty: qtyMatch ? parseFloat(qtyMatch[1]) : 1,
-            unit: qtyMatch?.[2] || ''
-          });
-        }
-      });
-      if (steps.length) resultEl.innerHTML = `<p>Parsed steps too.</p>`;
+    resultEl.innerHTML = '<p>Importing…</p>';
+
+    const parsed = await parseRecipeImport(text);
+    if (!parsed || !parsed.name) {
+      resultEl.innerHTML = '<p>Could not extract a recipe. Try pasting the full recipe text, or a different site.</p>';
+      return;
     }
-    resultEl.innerHTML = `<p>Parsed: <strong>${name}</strong> with ${ingredients.length} ingredients${typeof steps !== 'undefined' && steps.length ? ` and ${steps.length} steps` : ''}. <button id="save-import">Save as custom recipe</button></p>`;
+
+    // Review form before save
+    resultEl.innerHTML = `
+      <div class="card">
+        <h4>Review import</h4>
+        <label>Name <input id="imp-name" value="${escapeHtml(parsed.name)}" style="width:100%;"></label>
+        <label>Servings <input id="imp-servings" type="number" min="1" value="${parsed.servings || 2}" style="width:80px;"></label>
+        <label>Blurb <textarea id="imp-blurb" rows="2" style="width:100%;">${escapeHtml(parsed.blurb || '')}</textarea></label>
+        <p><strong>Ingredients (${parsed.ingredients.length})</strong></p>
+        <ul style="font-size:0.9rem;">${parsed.ingredients.map(i => `<li>${i.qty || 1} ${i.unit || ''} ${escapeHtml(i.name)}</li>`).join('')}</ul>
+        <p><strong>Steps (${(parsed.steps || []).length})</strong></p>
+        <ol style="font-size:0.9rem;">${(parsed.steps || []).map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ol>
+        <button id="save-import">Save as custom recipe</button>
+        <button type="button" id="cancel-import-review">Cancel</button>
+      </div>
+    `;
+    document.getElementById('cancel-import-review')?.addEventListener('click', () => {
+      document.getElementById('import-panel').hidden = true;
+    });
     document.getElementById('save-import')?.addEventListener('click', () => {
-      addCustomMeal({ name, slot: 'dinner', servings: 2, blurb: 'Imported', ingredients, steps: steps || ['Review and edit.'], centsPerServing: 200 });
+      const name = document.getElementById('imp-name').value.trim() || parsed.name;
+      const servings = Number(document.getElementById('imp-servings').value) || 2;
+      const blurb = document.getElementById('imp-blurb').value.trim();
+      addCustomMeal({
+        name,
+        slot: 'dinner',
+        servings,
+        blurb: blurb || 'Imported',
+        ingredients: parsed.ingredients,
+        steps: parsed.steps && parsed.steps.length ? parsed.steps : ['Review and edit.'],
+        centsPerServing: 200
+      });
       document.getElementById('import-panel').hidden = true;
       renderMeals();
     });
   });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c]));
+}
+
+async function parseRecipeImport(input) {
+  let html = '';
+  let name = '';
+  let ingredients = [];
+  let steps = [];
+  let servings = 2;
+  let blurb = '';
+
+  if (/^https?:\/\//i.test(input)) {
+    // Try direct, then CORS proxies
+    const proxies = [
+      input,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(input)}`,
+      `https://corsproxy.io/?${encodeURIComponent(input)}`
+    ];
+    for (const url of proxies) {
+      try {
+        const res = await fetch(url, { headers: { 'Accept': 'text/html' } });
+        if (res.ok) {
+          html = await res.text();
+          if (html && html.length > 200) break;
+        }
+      } catch (e) { /* try next */ }
+    }
+    if (!html) {
+      name = input.split('/').filter(Boolean).pop()?.replace(/[-_]/g, ' ') || 'Imported recipe';
+      return { name, ingredients: [], steps: [], servings: 2, blurb: 'URL fetch blocked. Paste the recipe text instead.' };
+    }
+  } else {
+    html = input;
+  }
+
+  // 1. JSON-LD (schema.org Recipe), including @graph and arrays
+  const ldMatches = [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const m of ldMatches) {
+    try {
+      let data = JSON.parse(m[1].trim());
+      const candidates = [];
+      const collect = (obj) => {
+        if (!obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) { obj.forEach(collect); return; }
+        const types = [].concat(obj['@type'] || []);
+        if (types.some(t => /Recipe/i.test(t))) candidates.push(obj);
+        if (obj['@graph']) collect(obj['@graph']);
+        Object.values(obj).forEach(v => { if (typeof v === 'object') collect(v); });
+      };
+      collect(data);
+      const recipe = candidates[0];
+      if (recipe) {
+        name = recipe.name || name;
+        blurb = recipe.description || blurb;
+        servings = parseInt(recipe.recipeYield) || servings;
+        const ings = recipe.recipeIngredient || recipe.ingredients || [];
+        ingredients = ings.map(parseIngredientLine).filter(i => i.name);
+        const instr = recipe.recipeInstructions || recipe.instructions || [];
+        steps = (Array.isArray(instr) ? instr : [instr]).flatMap(s => {
+          if (typeof s === 'string') return [s];
+          if (s.text) return [s.text];
+          if (s.itemListElement) return s.itemListElement.map(i => i.text || i).filter(Boolean);
+          return [];
+        }).map(s => String(s).trim()).filter(Boolean);
+        if (name && ingredients.length) return { name, ingredients, steps, servings, blurb };
+      }
+    } catch (e) { /* continue */ }
+  }
+
+  // 2. Microdata fallback
+  const nameMatch = html.match(/itemprop=["']name["'][^>]*>([^<]+)/i) || html.match(/<h1[^>]*>([^<]+)/i);
+  if (nameMatch) name = nameMatch[1].trim();
+  const ingMatches = [...html.matchAll(/itemprop=["']recipeIngredient["'][^>]*>([^<]+)/gi)];
+  if (ingMatches.length) {
+    ingredients = ingMatches.map(m => parseIngredientLine(m[1])).filter(i => i.name);
+  }
+  const stepMatches = [...html.matchAll(/itemprop=["']recipeInstructions["'][^>]*>([^<]+)/gi)];
+  if (stepMatches.length) steps = stepMatches.map(m => m[1].trim()).filter(Boolean);
+
+  // 3. Plain text / paste heuristics
+  if (!ingredients.length) {
+    const lines = html.split(/\n|<br\s*\/?>/i).map(l => l.replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+    if (!name && lines[0]) name = lines[0];
+    let mode = 'none';
+    for (const line of lines) {
+      const lower = line.toLowerCase();
+      if (/ingredient/.test(lower)) { mode = 'ing'; continue; }
+      if (/instruction|direction|method|step/.test(lower)) { mode = 'step'; continue; }
+      if (mode === 'step' || /^\d+[\.\)]\s/.test(line)) {
+        steps.push(line.replace(/^\d+[\.\)]\s*/, ''));
+      } else if (mode === 'ing' || /^\d/.test(line)) {
+        const parsedIng = parseIngredientLine(line);
+        if (parsedIng.name) ingredients.push(parsedIng);
+      }
+    }
+  }
+
+  if (!name) name = 'Imported recipe';
+  return { name, ingredients, steps, servings, blurb };
+}
+
+function parseIngredientLine(line) {
+  const s = String(line).replace(/<[^>]+>/g, '').trim();
+  if (!s) return { name: '', qty: 1, unit: '' };
+  // Common patterns: "2 cups flour", "1/2 tsp salt", "3 large eggs"
+  const m = s.match(/^([\d\/\.\s]+)\s*([a-zA-Z]+)?\s+(.*)$/);
+  if (m) {
+    let qty = 1;
+    try { qty = eval(m[1].replace(/\s+/g, '')) || 1; } catch { qty = parseFloat(m[1]) || 1; }
+    return { qty, unit: m[2] || '', name: m[3].trim() };
+  }
+  return { qty: 1, unit: '', name: s };
 }
 
 function renderPantry() {
