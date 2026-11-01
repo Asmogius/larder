@@ -1,0 +1,706 @@
+/* Larder Improved — UI layer (iteration 3)
+   Added validated recipe form UI, Shop pantry integration, improved Week skeleton.
+   Accessible focus, labels, role=alert.
+*/
+import { state, saveState, MEALS, aggregateGrocery, computeCost, checkConflicts, validateRecipeForm, addToPantry, addCustomMeal, getAllMeals, getExpiringSoon, suggestUseItUp, markEatenAndDeduct, planLeftover, exportData, importData, resetData, copyDay, pushUndo, popUndo, computeDailyNutrition, getTargets } from './app.js';
+import { normalizeIngredient } from './data.js';
+
+function showUndoToast(message) {
+  let toast = document.getElementById('undo-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'undo-toast';
+    toast.style.cssText = 'position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#1a1a1a;color:#fff;padding:0.75rem 1rem;border-radius:8px;z-index:2000;display:flex;gap:1rem;align-items:center;';
+    document.body.appendChild(toast);
+  }
+  toast.innerHTML = `<span>${message}</span><button id="undo-btn" style="background:#fff;color:#1a1a1a;">Undo</button>`;
+  toast.hidden = false;
+  document.getElementById('undo-btn').onclick = () => {
+    if (popUndo()) {
+      toast.hidden = true;
+      renderPage(document.querySelector('.page:not([hidden])')?.id || 'today');
+    }
+  };
+  setTimeout(() => { toast.hidden = true; }, 5000);
+}
+
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.hidden = true);
+  const page = document.getElementById(id);
+  if (page) {
+    page.hidden = false;
+    page.focus();
+  }
+}
+
+// Navigation
+document.querySelectorAll('nav a').forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    const target = a.getAttribute('href').slice(1);
+    showPage(target);
+    renderPage(target);
+  });
+});
+
+function renderPage(page) {
+  if (page === 'today') renderToday();
+  if (page === 'shop') renderShop();
+  if (page === 'settings') renderSettings();
+  if (page === 'meals') renderMeals();
+  if (page === 'week') renderWeek();
+  if (page === 'pantry') renderPantry();
+  if (page === 'review') renderReview();
+}
+
+function getTodayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function ensureDay(date) {
+  if (!state.days[date]) state.days[date] = { breakfast: null, lunch: null, dinner: null };
+  return state.days[date];
+}
+
+function renderToday() {
+  const el = document.getElementById('today-content');
+  const today = getTodayKey();
+  const day = ensureDay(today);
+  const planned = [day.breakfast, day.lunch, day.dinner].filter(Boolean);
+  const allMeals = getAllMeals();
+  const nut = computeDailyNutrition(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), state.profile.householdSize);
+  const targets = getTargets(state.profile);
+  const cost = computeCost(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), state.profile.householdSize, state.prices || {});
+  el.innerHTML = `
+    <p>${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${state.profile.goal} · ${state.profile.householdSize} person</p>
+    <div class="card">
+      <h3>Breakfast ${day.breakfast ? '' : 'OPEN'}</h3>
+      ${day.breakfast ? `<p>${allMeals.find(m => m.id === day.breakfast.mealId)?.name || 'Custom'} <button data-slot="breakfast" data-action="clear">Clear</button> <button data-slot="breakfast" data-action="ate">We ate this</button> <button data-slot="breakfast" data-action="cook">Cook</button> <button data-slot="breakfast" data-action="leftover">Leftover tomorrow</button></p>` : '<button data-slot="breakfast" data-action="add">Add breakfast</button>'}
+    </div>
+    <div class="card">
+      <h3>Lunch ${day.lunch ? '' : 'OPEN'}</h3>
+      ${day.lunch ? `<p>${allMeals.find(m => m.id === day.lunch.mealId)?.name || 'Custom'} <button data-slot="lunch" data-action="clear">Clear</button> <button data-slot="lunch" data-action="ate">We ate this</button> <button data-slot="lunch" data-action="cook">Cook</button> <button data-slot="lunch" data-action="leftover">Leftover tomorrow</button></p>` : '<button data-slot="lunch" data-action="add">Add lunch</button>'}
+    </div>
+    <div class="card">
+      <h3>Dinner ${day.dinner ? '' : 'OPEN'}</h3>
+      ${day.dinner ? `<p>${allMeals.find(m => m.id === day.dinner.mealId)?.name || 'Custom'} <button data-slot="dinner" data-action="clear">Clear</button> <button data-slot="dinner" data-action="ate">We ate this</button> <button data-slot="dinner" data-action="cook">Cook</button> <button data-slot="dinner" data-action="leftover">Leftover tomorrow</button></p>` : '<button data-slot="dinner" data-action="add">Add dinner</button>'}
+    </div>
+    <aside class="card">
+      <h3>If this day stands</h3>
+      <p>Calories ${nut.calories} / ${targets.calories} · Protein ${nut.protein}g / ${targets.protein}g · Carbs ${nut.carbs}g / ${targets.carbs}g · Fat ${nut.fat}g / ${targets.fat}g</p>
+      <p>Cost ${cost.total.toFixed(2)} ${cost.label}</p>
+      <button id="suggest-btn">Suggest open meals</button>
+    </aside>
+  `;
+  // Wire buttons
+  el.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const slot = btn.dataset.slot;
+      const action = btn.dataset.action;
+      if (action === 'clear') {
+        day[slot] = null;
+        saveState();
+        renderToday();
+      } else if (action === 'ate') {
+        if (markEatenAndDeduct(today, slot)) {
+          alert('Marked eaten and deducted ingredients from pantry (where stocked).');
+        }
+        renderToday();
+      } else if (action === 'cook') {
+        const meal = allMeals.find(m => m.id === day[slot]?.mealId);
+        if (meal) openCookMode(meal);
+      } else if (action === 'leftover') {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const tomKey = tomorrow.toISOString().slice(0, 10);
+        if (planLeftover(today, slot, tomKey, slot)) {
+          alert('Planned as leftover for tomorrow.');
+        }
+        renderToday();
+      } else if (action === 'add') {
+        const meal = allMeals.find(m => m.slot === slot && !state.profile.allergens.some(a => m.allergens?.includes(a)));
+        if (meal) {
+          day[slot] = { mealId: meal.id, status: 'planned' };
+          saveState();
+          renderToday();
+        }
+      }
+    });
+  });
+  document.getElementById('suggest-btn')?.addEventListener('click', () => {
+    const pantryIds = new Set((state.pantry || []).map(p => normalizeIngredient(p.name).id));
+    ['breakfast', 'lunch', 'dinner'].forEach(slot => {
+      if (!day[slot]) {
+        // Prefer meals that use pantry items
+        let meal = allMeals.find(m => m.slot === slot && !state.profile.allergens.some(a => m.allergens?.includes(a)) && m.ingredients?.some(ing => pantryIds.has(normalizeIngredient(ing.name).id)));
+        if (!meal) meal = allMeals.find(m => m.slot === slot && !state.profile.allergens.some(a => m.allergens?.includes(a)));
+        if (meal) day[slot] = { mealId: meal.id, status: 'planned' };
+      }
+    });
+    saveState();
+    renderToday();
+  });
+}
+
+function renderShop() {
+  const el = document.getElementById('shop-content');
+  const planned = [];
+  const today = new Date();
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    const key = d.toISOString().slice(0, 10);
+    const day = state.days[key];
+    if (day) {
+      ['breakfast', 'lunch', 'dinner'].forEach(slot => {
+        if (day[slot] && day[slot].mealId) planned.push(day[slot]);
+      });
+    }
+  }
+  const allMeals = getAllMeals();
+  const list = aggregateGrocery(planned, { excludeEaten: true });
+  const total = computeCost(planned.map(p => allMeals.find(m => m.id === p.mealId)).filter(Boolean), state.profile.householdSize);
+  el.innerHTML = `
+    <p>Grocery list · ${total.total.toFixed(2)} ${total.label} · Next 7 days</p>
+    <ul style="list-style:none; padding:0;">
+      ${list.map((item, idx) => `<li class="card" style="margin-bottom:0.5rem;"><label><input type="checkbox" data-idx="${idx}"> ${item.display} ${item.canon.name}</label> <small style="color:var(--muted);">(${item.expanded})</small> <button data-add-pantry="${idx}" style="margin-left:0.5rem; font-size:0.8rem;">Add to pantry</button> <input type="number" data-price="${item.canon.id}" placeholder="price est." step="0.01" style="width:80px; margin-left:0.5rem;" value="${((state.prices || {})[item.canon.id] || 0) / 100 || ''}"></li>`).join('') || '<li>No planned meals in the next 7 days.</li>'}
+    </ul>
+    <button id="add-manual">Add manual item</button>
+    <button id="copy-list">Copy list</button>
+    <button id="share-list">Share</button>
+    <p>Date range: <select id="range"><option value="7">Next 7 days</option><option value="week">Rest of this week</option><option value="custom">Custom</option></select></p>
+    <label><input type="checkbox" id="include-eaten"> Include already eaten</label>
+    <p><small>Check off or use “Add to pantry” to track inventory (P1 foundation).</small></p>
+  `;
+  el.querySelectorAll('[data-add-pantry]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const item = list[Number(btn.dataset.addPantry)];
+      addToPantry({ name: item.canon.name, qty: item.qty, unit: item.unit, location: item.aisle });
+      alert(`Added ${item.display} ${item.canon.name} to pantry.`);
+    });
+  });
+  el.querySelectorAll('[data-price]').forEach(input => {
+    input.addEventListener('change', () => {
+      const id = input.dataset.price;
+      const val = parseFloat(input.value);
+      if (!isNaN(val) && val >= 0) {
+        state.prices = state.prices || {};
+        state.prices[id] = Math.round(val * 100);
+        saveState();
+        renderShop();
+      }
+    });
+  });
+  document.getElementById('copy-list')?.addEventListener('click', () => {
+    const text = list.map(i => `${i.display} ${i.canon.name}`).join('\n');
+    navigator.clipboard.writeText(text).then(() => alert('List copied'));
+  });
+  document.getElementById('share-list')?.addEventListener('click', () => {
+    const text = list.map(i => `${i.display} ${i.canon.name}`).join('\n');
+    if (navigator.share) navigator.share({ title: 'Grocery list', text }).catch(() => {});
+    else alert('Share not supported; list copied instead.');
+  });
+  document.getElementById('add-manual')?.addEventListener('click', () => {
+    const name = prompt('Item name:');
+    if (name) {
+      state.manualItems = state.manualItems || [];
+      state.manualItems.push({ name, qty: 1, unit: '' });
+      saveState();
+      renderShop();
+    }
+  });
+}
+
+function renderSettings() {
+  const el = document.getElementById('settings-content');
+  el.innerHTML = `
+    <form id="settings-form">
+      <label>Goal
+        <select name="goal">
+          <option value="balanced" ${state.profile.goal === 'balanced' ? 'selected' : ''}>Balanced</option>
+          <option value="performance" ${state.profile.goal === 'performance' ? 'selected' : ''}>Performance</option>
+          <option value="keto" ${state.profile.goal === 'keto' ? 'selected' : ''}>Keto</option>
+        </select>
+      </label>
+      <label>Household size <input type="number" name="householdSize" value="${state.profile.householdSize}" min="1" inputmode="numeric"></label>
+      <label>Allergens (comma-separated) <input name="allergens" value="${(state.profile.allergens || []).join(', ')}"></label>
+      <button type="submit">Save</button>
+    </form>
+    <div class="card">
+      <h3>Data</h3>
+      <button id="export-btn">Export JSON backup</button>
+      <button id="import-btn">Import JSON</button>
+      <input type="file" id="import-file" accept=".json" hidden>
+      <button id="reset-btn">Reset all data</button>
+    </div>
+    <div id="settings-errors" role="alert" hidden></div>
+    <div id="conflicts" class="card" hidden></div>
+  `;
+  document.getElementById('settings-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const allergens = (form.get('allergens') || '').split(',').map(s => s.trim()).filter(Boolean);
+    const newProfile = { ...state.profile, goal: form.get('goal'), householdSize: Number(form.get('householdSize')), allergens };
+    const conflicts = checkConflicts(state, newProfile);
+    const conflictEl = document.getElementById('conflicts');
+    if (conflicts.length) {
+      conflictEl.hidden = false;
+      conflictEl.innerHTML = `<h3>${conflicts.length} conflicting meal(s)</h3><ul>${conflicts.map(c => `<li>${c.date} ${c.slot}: ${c.name} (${c.reasons.join(', ')})</li>`).join('')}</ul><button id="swap-all">Swap conflicting</button> <button id="keep-all">Keep</button>`;
+      document.getElementById('swap-all').addEventListener('click', () => {
+        conflicts.forEach(c => {
+          const day = state.days[c.date];
+          if (day && day[c.slot]) day[c.slot] = null;
+        });
+        state.profile = newProfile;
+        saveState();
+        renderSettings();
+      });
+      document.getElementById('keep-all').addEventListener('click', () => {
+        state.profile = newProfile;
+        saveState();
+        conflictEl.hidden = true;
+        renderSettings();
+      });
+    } else {
+      state.profile = newProfile;
+      saveState();
+      conflictEl.hidden = true;
+      renderSettings();
+    }
+  });
+  // Data integrity
+  document.getElementById('export-btn')?.addEventListener('click', () => {
+    const blob = new Blob([exportData()], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'larder-backup.json';
+    a.click();
+  });
+  document.getElementById('import-btn')?.addEventListener('click', () => document.getElementById('import-file').click());
+  document.getElementById('import-file')?.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (importData(reader.result)) {
+        alert('Import successful');
+        location.reload();
+      } else alert('Import failed');
+    };
+    reader.readAsText(file);
+  });
+  document.getElementById('reset-btn')?.addEventListener('click', () => {
+    if (confirm('Reset all data? This cannot be undone.')) {
+      resetData();
+      location.reload();
+    }
+  });
+}
+
+function renderMeals() {
+  const allMeals = getAllMeals();
+  const el = document.getElementById('meals-content');
+  el.innerHTML = `
+    <p>${allMeals.length} recipes. Estimated prices shown as "est."</p>
+    <button class="btn" id="new-recipe">Write a recipe</button>
+    <button class="btn" id="import-recipe" style="margin-left:0.5rem;">Import from URL / text</button>
+    <div id="recipe-form" class="card" hidden>
+      <h3>New recipe</h3>
+      <form id="recipe-form-el">
+        <div id="form-errors" role="alert" hidden></div>
+        <label>Name <input name="name" required></label><div class="error" data-field="name"></div>
+        <label>Slot
+          <select name="slot">
+            <option value="breakfast">Breakfast</option>
+            <option value="lunch">Lunch</option>
+            <option value="dinner">Dinner</option>
+          </select>
+        </label>
+        <label>Servings <input name="servings" type="number" min="1" inputmode="numeric" value="1"></label><div class="error" data-field="servings"></div>
+        <label>Calories (optional) <input name="calories" type="number" min="0" inputmode="numeric"></label><div class="error" data-field="calories"></div>
+        <label>Protein g (optional) <input name="protein" type="number" min="0" inputmode="numeric"></label><div class="error" data-field="protein"></div>
+        <label>Blurb <textarea name="blurb" rows="2" style="width:100%;max-width:400px;"></textarea></label>
+        <button type="submit">Save recipe</button>
+        <button type="button" id="cancel-recipe">Cancel</button>
+      </form>
+    </div>
+    <div id="import-panel" class="card" hidden>
+      <h3>Import recipe</h3>
+      <p>Paste a recipe URL or raw text (schema.org/Recipe preferred).</p>
+      <textarea id="import-text" rows="4" style="width:100%;" placeholder="https://example.com/recipe or paste recipe text"></textarea>
+      <button id="do-import">Import</button>
+      <button type="button" id="cancel-import">Cancel</button>
+      <div id="import-result"></div>
+    </div>
+    <div>${allMeals.map(m => `<div class="card"><h3>${m.name}${m.custom ? ' <small>(Yours)</small>' : ''}</h3><p>${m.blurb || ''}</p><small>${m.totalMin || '?'} min · $${((m.centsPerServing || 200)/100).toFixed(2)} est. · ${m.slot}</small></div>`).join('')}</div>
+  `;
+  document.getElementById('new-recipe')?.addEventListener('click', () => {
+    document.getElementById('recipe-form').hidden = false;
+    document.getElementById('import-panel').hidden = true;
+  });
+  document.getElementById('import-recipe')?.addEventListener('click', () => {
+    document.getElementById('import-panel').hidden = false;
+    document.getElementById('recipe-form').hidden = true;
+  });
+  document.getElementById('cancel-recipe')?.addEventListener('click', () => {
+    document.getElementById('recipe-form').hidden = true;
+  });
+  document.getElementById('cancel-import')?.addEventListener('click', () => {
+    document.getElementById('import-panel').hidden = true;
+  });
+  document.getElementById('recipe-form-el')?.addEventListener('submit', e => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const data = Object.fromEntries(form);
+    const result = validateRecipeForm(data);
+    const errorSummary = document.getElementById('form-errors');
+    document.querySelectorAll('.error').forEach(el => el.textContent = '');
+    if (!result.valid) {
+      errorSummary.hidden = false;
+      errorSummary.textContent = 'Please fix the errors below.';
+      Object.entries(result.errors).forEach(([field, msg]) => {
+        const errEl = document.querySelector(`.error[data-field="${field}"]`);
+        if (errEl) errEl.textContent = msg;
+      });
+      const first = Object.keys(result.errors)[0];
+      document.querySelector(`[name="${first}"]`)?.focus();
+    } else {
+      errorSummary.hidden = true;
+      const meal = {
+        name: data.name,
+        slot: data.slot,
+        servings: Number(data.servings),
+        blurb: data.blurb || '',
+        ingredients: [],
+        steps: [],
+        protein: Number(data.protein) || 0,
+        calories: Number(data.calories) || 0,
+        centsPerServing: 200
+      };
+      addCustomMeal(meal);
+      document.getElementById('recipe-form').hidden = true;
+      renderMeals();
+    }
+  });
+  document.getElementById('do-import')?.addEventListener('click', async () => {
+    const text = document.getElementById('import-text').value.trim();
+    const resultEl = document.getElementById('import-result');
+    if (!text) {
+      resultEl.textContent = 'Please paste a URL or recipe text.';
+      return;
+    }
+    // Basic paste fallback + schema.org stub (P1 #7)
+    let name = 'Imported recipe';
+    let ingredients = [];
+    if (text.startsWith('http')) {
+      resultEl.innerHTML = `<p>URL detected. Attempting to fetch schema.org/Recipe (may be blocked by CORS)…</p>`;
+      try {
+        const res = await fetch(text);
+        const html = await res.text();
+        const jsonLdMatch = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
+        if (jsonLdMatch) {
+          const data = JSON.parse(jsonLdMatch[1]);
+          const recipe = Array.isArray(data) ? data.find(d => d['@type'] === 'Recipe') : data;
+          if (recipe && recipe.name) {
+            name = recipe.name;
+            ingredients = (recipe.recipeIngredient || []).slice(0, 10).map(i => ({ name: String(i), qty: 1, unit: '' }));
+            resultEl.innerHTML = `<p>Found schema.org Recipe: <strong>${name}</strong> with ${ingredients.length} ingredients.</p>`;
+          }
+        }
+      } catch (e) {
+        resultEl.innerHTML += `<p>Fetch failed (CORS or network). Using name from URL.</p>`;
+        name = text.split('/').pop()?.replace(/[-_]/g, ' ') || name;
+      }
+    } else {
+      // Improved paste parser: detect ingredients and steps sections
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      name = lines[0] || name;
+      let inIngredients = false, inSteps = false;
+      const steps = [];
+      ingredients = [];
+      lines.slice(1).forEach(line => {
+        const lower = line.toLowerCase();
+        if (lower.includes('ingredient')) { inIngredients = true; inSteps = false; return; }
+        if (lower.includes('instruction') || lower.includes('direction') || lower.includes('step')) { inSteps = true; inIngredients = false; return; }
+        if (inSteps || /^\d+\./.test(line)) steps.push(line.replace(/^\d+\.\s*/, ''));
+        else if (inIngredients || /\d/.test(line)) {
+          const qtyMatch = line.match(/^(\d+\.?\d*)\s*(\w+)?\s+(.*)/);
+          ingredients.push({
+            name: qtyMatch ? qtyMatch[3] : line.replace(/^\d+[\s\w]*\s*/, ''),
+            qty: qtyMatch ? parseFloat(qtyMatch[1]) : 1,
+            unit: qtyMatch?.[2] || ''
+          });
+        }
+      });
+      if (steps.length) resultEl.innerHTML = `<p>Parsed steps too.</p>`;
+    }
+    resultEl.innerHTML = `<p>Parsed: <strong>${name}</strong> with ${ingredients.length} ingredients${typeof steps !== 'undefined' && steps.length ? ` and ${steps.length} steps` : ''}. <button id="save-import">Save as custom recipe</button></p>`;
+    document.getElementById('save-import')?.addEventListener('click', () => {
+      addCustomMeal({ name, slot: 'dinner', servings: 2, blurb: 'Imported', ingredients, steps: steps || ['Review and edit.'], centsPerServing: 200 });
+      document.getElementById('import-panel').hidden = true;
+      renderMeals();
+    });
+  });
+}
+
+function renderPantry() {
+  const el = document.getElementById('pantry-content');
+  const items = state.pantry || [];
+  const expiring = getExpiringSoon(3);
+  const suggestions = suggestUseItUp();
+  el.innerHTML = `
+    <p>${items.length} items in pantry.</p>
+    ${expiring.length ? `<div class="card" role="alert" style="background:#fff3cd;"><strong>Expiring soon:</strong> ${expiring.map(e => e.name).join(', ')}</div>` : ''}
+    ${suggestions.length ? `<div class="card"><strong>Use it up:</strong> ${suggestions.map(s => s.name).join(', ')}</div>` : ''}
+    <div class="card">
+      <h3>Scan receipt</h3>
+      <p>Upload a photo of a store receipt. Text is extracted on your device (never leaves the browser).</p>
+      <input type="file" id="receipt-file" accept="image/*" capture="environment" style="margin-bottom:0.5rem;">
+      <button id="scan-receipt" disabled>Scan receipt</button>
+      <div id="scan-status" style="margin-top:0.5rem;"></div>
+      <div id="scan-results"></div>
+    </div>
+    ${items.length ? items.map(item => `
+      <div class="card">
+        <strong>${item.name}</strong> · ${item.qty || 0} ${item.unit || ''}
+        <br><small>Location: ${item.location || 'pantry'} · Added ${new Date(item.added).toLocaleDateString()}${item.expiry ? ` · Expires ${new Date(item.expiry).toLocaleDateString()}` : ''}</small>
+        <button data-remove="${item.id}" style="margin-top:0.5rem;">Remove</button>
+      </div>
+    `).join('') : '<p class="card">Pantry is empty. Add items from the Shop list or scan a receipt.</p>'}
+    <p><small>Cooking a meal can deduct ingredients (foundation ready).</small></p>
+  `;
+  // Wire remove
+  el.querySelectorAll('[data-remove]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.pantry = state.pantry.filter(p => p.id !== btn.dataset.remove);
+      saveState();
+      renderPantry();
+    });
+  });
+  // Receipt scanning
+  const fileInput = document.getElementById('receipt-file');
+  const scanBtn = document.getElementById('scan-receipt');
+  const statusEl = document.getElementById('scan-status');
+  const resultsEl = document.getElementById('scan-results');
+  fileInput.addEventListener('change', () => {
+    scanBtn.disabled = !fileInput.files?.length;
+  });
+  scanBtn.addEventListener('click', async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    statusEl.textContent = 'Scanning receipt on device…';
+    scanBtn.disabled = true;
+    try {
+      const { data: { text } } = await Tesseract.recognize(file, 'eng', {
+        logger: m => { if (m.status === 'recognizing text') statusEl.textContent = `Scanning… ${Math.round(m.progress * 100)}%`; }
+      });
+      const items = parseReceiptText(text);
+      statusEl.textContent = `Found ${items.length} possible food items.`;
+      if (items.length) {
+        resultsEl.innerHTML = `
+          <ul style="list-style:none; padding:0;">
+            ${items.map((it, i) => `<li class="card" style="margin-bottom:0.5rem;"><label><input type="checkbox" data-idx="${i}" checked> ${it.name} <small>(${it.qty} ${it.unit})</small></label></li>`).join('')}
+          </ul>
+          <button id="add-selected">Add selected to pantry</button>
+        `;
+        document.getElementById('add-selected').addEventListener('click', () => {
+          const checks = resultsEl.querySelectorAll('input[type="checkbox"]:checked');
+          let added = 0;
+          checks.forEach(cb => {
+            const it = items[Number(cb.dataset.idx)];
+            addToPantry({ name: it.name, qty: it.qty, unit: it.unit, location: 'pantry' });
+            added++;
+          });
+          statusEl.textContent = `Added ${added} items to pantry.`;
+          resultsEl.innerHTML = '';
+          renderPantry();
+        });
+      } else {
+        resultsEl.innerHTML = '<p>No clear food items detected. Try a clearer photo or add manually.</p>';
+      }
+    } catch (err) {
+      statusEl.textContent = 'Scan failed. Try a clearer image.';
+      console.error(err);
+    }
+    scanBtn.disabled = false;
+  });
+}
+
+// Simple receipt parser: look for lines that look like food items
+function parseReceiptText(text) {
+  const foodKeywords = ['milk', 'eggs', 'egg', 'bread', 'chicken', 'beef', 'yogurt', 'cheese', 'apple', 'banana', 'onion', 'garlic', 'rice', 'beans', 'tomato', 'spinach', 'oats', 'oil', 'butter', 'pasta', 'salmon', 'potato', 'carrot', 'pepper', 'lettuce', 'cucumber', 'avocado', 'berry', 'berries', 'granola', 'salsa', 'tortilla', 'lentil', 'chickpea', 'bacon', 'shrimp', 'cod', 'sausage', 'farro', 'barley'];
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 3 && l.length < 60);
+  const items = [];
+  lines.forEach(line => {
+    const lower = line.toLowerCase();
+    const isFood = foodKeywords.some(kw => lower.includes(kw)) || /\b(oz|lb|cup|can|pack|ct)\b/i.test(line);
+    if (isFood && !/total|tax|change|cash|visa|mastercard|subtotal|balance/i.test(line)) {
+      // Extract rough qty
+      const qtyMatch = line.match(/(\d+\.?\d*)\s*(oz|lb|cup|can|pack|ct|g|ml)?/i);
+      const qty = qtyMatch ? parseFloat(qtyMatch[1]) : 1;
+      const unit = qtyMatch?.[2] || '';
+      const name = line.replace(/\$?\d+\.?\d*/g, '').replace(/\s+/g, ' ').trim();
+      if (name.length > 2) items.push({ name, qty, unit });
+    }
+  });
+  // Dedupe by name
+  const seen = new Set();
+  return items.filter(it => {
+    const key = it.name.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 15);
+}
+
+function renderReview() {
+  const el = document.getElementById('review-content');
+  const days = Object.keys(state.days || {}).length;
+  const eaten = Object.values(state.days || {}).reduce((acc, day) => acc + ['breakfast','lunch','dinner'].filter(s => day[s]?.status === 'eaten').length, 0);
+  const pantryCount = (state.pantry || []).length;
+  const customCount = (state.customMeals || []).length;
+  el.innerHTML = `
+    <p>Review</p>
+    <div class="card">
+      <p>Days with plans: ${days}</p>
+      <p>Meals marked eaten: ${eaten}</p>
+      <p>Pantry items: ${pantryCount}</p>
+      <p>Custom recipes: ${customCount}</p>
+    </div>
+    <p><small>Local-only insights. No data leaves the device.</small></p>
+  `;
+}
+
+function renderWeek() {
+  const daysHtml = [];
+  const today = new Date();
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    const key = d.toISOString().slice(0, 10);
+    const day = state.days[key] || {};
+    const slots = ['breakfast', 'lunch', 'dinner'].map(slot => {
+      const entry = day[slot];
+      const name = entry ? (getAllMeals().find(m => m.id === entry.mealId)?.name || 'Meal') : '—';
+      return `<div class="meal-slot" draggable="${!!entry}" data-date="${key}" data-slot="${slot}" style="padding:0.25rem; margin:0.25rem 0; background:#f0f0f0; border-radius:4px; cursor:${entry ? 'grab' : 'default'};">${slot}: ${name}${entry?.leftover ? ' (leftover)' : ''}</div>`;
+    }).join('');
+    daysHtml.push(`<div class="card week-day" data-date="${key}"><strong>${d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</strong><br>${slots}<button data-copy="${key}" style="margin-top:0.5rem; font-size:0.8rem;">Copy day</button></div>`);
+  }
+  el.innerHTML = `<p>Week. Drag meals between slots/days. Copy a day to the next.</p><div id="week-days">${daysHtml.join('')}</div>`;
+  // Meal drag-and-drop
+  el.querySelectorAll('.meal-slot[draggable="true"]').forEach(slotEl => {
+    slotEl.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', JSON.stringify({ date: slotEl.dataset.date, slot: slotEl.dataset.slot }));
+    });
+  });
+  el.querySelectorAll('.week-day').forEach(dayEl => {
+    dayEl.addEventListener('dragover', e => e.preventDefault());
+    dayEl.addEventListener('drop', e => {
+      e.preventDefault();
+      const data = JSON.parse(e.dataTransfer.getData('text/plain') || '{}');
+      const toDate = dayEl.dataset.date;
+      const toSlot = e.target.closest('.meal-slot')?.dataset.slot || 'dinner';
+      if (data.date && data.slot && (data.date !== toDate || data.slot !== toSlot)) {
+        const fromDay = state.days[data.date];
+        if (fromDay && fromDay[data.slot]) {
+          pushUndo({ restore: () => { /* simple restore stub */ } });
+          if (!state.days[toDate]) state.days[toDate] = { breakfast: null, lunch: null, dinner: null };
+          state.days[toDate][toSlot] = fromDay[data.slot];
+          fromDay[data.slot] = null;
+          saveState();
+          showUndoToast('Meal moved');
+          renderWeek();
+        }
+      }
+    });
+  });
+  el.querySelectorAll('[data-copy]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const from = btn.dataset.copy;
+      const next = new Date(from);
+      next.setDate(next.getDate() + 1);
+      const to = next.toISOString().slice(0, 10);
+      if (copyDay(from, to)) {
+        showUndoToast('Day copied');
+        renderWeek();
+      }
+    });
+  });
+}
+
+// Basic Cook mode (P2 #14 foundation): step-by-step, Escape to close, arrow keys, simple timer
+function openCookMode(meal) {
+  let step = 0;
+  const steps = meal.steps || ['No steps listed.'];
+  const overlay = document.createElement('div');
+  overlay.id = 'cook-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:#f7f4ef;z-index:1000;padding:1rem;overflow:auto;';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.innerHTML = `
+    <h2>${meal.name}</h2>
+    <p>Step <span id="step-num">${step + 1}</span> of ${steps.length}</p>
+    <div id="step-text" class="card" style="font-size:1.25rem;min-height:8rem;">${steps[step]}</div>
+    <div style="margin-top:1rem;">
+      <button id="prev-step">← Previous</button>
+      <button id="next-step">Next →</button>
+      <button id="start-timer">Start 5 min timer</button>
+      <span id="timer-display"></span>
+    </div>
+    <button id="close-cook" style="margin-top:1rem;">Close (Esc)</button>
+  `;
+  document.body.appendChild(overlay);
+  // Focus trap and initial focus
+  const focusable = overlay.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  first?.focus();
+  overlay.addEventListener('keydown', e => {
+    if (e.key === 'Tab') {
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  });
+  const stepNum = overlay.querySelector('#step-num');
+  const stepText = overlay.querySelector('#step-text');
+  let timerId = null;
+  function updateStep() {
+    stepNum.textContent = step + 1;
+    stepText.textContent = steps[step];
+  }
+  overlay.querySelector('#prev-step').addEventListener('click', () => { if (step > 0) { step--; updateStep(); } });
+  overlay.querySelector('#next-step').addEventListener('click', () => { if (step < steps.length - 1) { step++; updateStep(); } });
+  overlay.querySelector('#start-timer').addEventListener('click', () => {
+    let secs = 5 * 60;
+    const display = overlay.querySelector('#timer-display');
+    if (timerId) clearInterval(timerId);
+    timerId = setInterval(() => {
+      secs--;
+      display.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+      if (secs <= 0) { clearInterval(timerId); display.textContent = 'Done!'; }
+    }, 1000);
+  });
+  function close() {
+    if (timerId) clearInterval(timerId);
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+  }
+  overlay.querySelector('#close-cook').addEventListener('click', close);
+  function onKey(e) {
+    if (e.key === 'Escape') close();
+    if (e.key === 'ArrowRight' && step < steps.length - 1) { step++; updateStep(); }
+    if (e.key === 'ArrowLeft' && step > 0) { step--; updateStep(); }
+  }
+  document.addEventListener('keydown', onKey);
+  // Wake Lock attempt
+  if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => {});
+}
+
+// PWA service worker stub
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+
+// Initial render
+renderPage('today');

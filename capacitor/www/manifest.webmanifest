@@ -1,0 +1,12 @@
+{
+  "name": "Larder",
+  "short_name": "Larder",
+  "description": "The week's meals, on paper. Local-only meal planner.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f4ef",
+  "theme_color": "#f7f4ef",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }
+  ]
+}

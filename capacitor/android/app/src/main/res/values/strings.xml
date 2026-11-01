@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Larder</string>
+    <string name="title_activity_main">Larder</string>
+    <string name="package_name">com.larder.app</string>
+    <string name="custom_url_scheme">com.larder.app</string>
+</resources>
