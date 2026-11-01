@@ -2,7 +2,7 @@
    Added validated recipe form UI, Shop pantry integration, improved Week skeleton.
    Accessible focus, labels, role=alert.
 */
-import { state, saveState, MEALS, aggregateGrocery, computeCost, checkConflicts, validateRecipeForm, addToPantry, addCustomMeal, getAllMeals, getExpiringSoon, suggestUseItUp, markEatenAndDeduct, planLeftover, exportData, importData, resetData, copyDay, pushUndo, popUndo, computeDailyNutrition, getTargets } from './app.js';
+import { state, saveState, MEALS, aggregateGrocery, computeCost, checkConflicts, validateRecipeForm, addToPantry, addCustomMeal, getAllMeals, getExpiringSoon, suggestUseItUp, markEatenAndDeduct, planLeftover, exportData, importData, resetData, copyDay, pushUndo, popUndo, computeDailyNutrition, getTargets, getHouseholdSize } from './app.js';
 import { normalizeIngredient } from './data.js';
 
 function showUndoToast(message) {
@@ -68,11 +68,11 @@ function renderToday() {
   const day = ensureDay(today);
   const planned = [day.breakfast, day.lunch, day.dinner].filter(Boolean);
   const allMeals = getAllMeals();
-  const nut = computeDailyNutrition(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), state.profile.householdSize);
+  const nut = computeDailyNutrition(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), getHouseholdSize(state.profile));
   const targets = getTargets(state.profile);
-  const cost = computeCost(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), state.profile.householdSize, state.prices || {});
+  const cost = computeCost(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), getHouseholdSize(state.profile), state.prices || {});
   el.innerHTML = `
-    <p>${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${state.profile.goal} · ${state.profile.householdSize} person</p>
+    <p>${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${state.profile.goal} · ${getHouseholdSize(state.profile)} person</p>
     <div class="card">
       <h3>Breakfast ${day.breakfast ? '' : 'OPEN'}</h3>
       ${day.breakfast ? `<p>${allMeals.find(m => m.id === day.breakfast.mealId)?.name || 'Custom'} <button data-slot="breakfast" data-action="clear">Clear</button> <button data-slot="breakfast" data-action="ate">We ate this</button> <button data-slot="breakfast" data-action="cook">Cook</button> <button data-slot="breakfast" data-action="leftover">Leftover tomorrow</button></p>` : '<button data-slot="breakfast" data-action="add">Add breakfast</button>'}
@@ -159,7 +159,7 @@ function renderShop() {
   }
   const allMeals = getAllMeals();
   const list = aggregateGrocery(planned, { excludeEaten: true });
-  const total = computeCost(planned.map(p => allMeals.find(m => m.id === p.mealId)).filter(Boolean), state.profile.householdSize);
+  const total = computeCost(planned.map(p => allMeals.find(m => m.id === p.mealId)).filter(Boolean), getHouseholdSize(state.profile));
   el.innerHTML = `
     <p>Grocery list · ${total.total.toFixed(2)} ${total.label} · Next 7 days</p>
     <ul style="list-style:none; padding:0;">
@@ -213,19 +213,62 @@ function renderShop() {
 
 function renderSettings() {
   const el = document.getElementById('settings-content');
+  const members = state.profile.members || [];
+  const size = members.length || getHouseholdSize(state.profile) || 1;
   el.innerHTML = `
     <form id="settings-form">
-      <label>Goal
+      <label>Default goal
         <select name="goal">
           <option value="balanced" ${state.profile.goal === 'balanced' ? 'selected' : ''}>Balanced</option>
           <option value="performance" ${state.profile.goal === 'performance' ? 'selected' : ''}>Performance</option>
           <option value="keto" ${state.profile.goal === 'keto' ? 'selected' : ''}>Keto</option>
         </select>
       </label>
-      <label>Household size <input type="number" name="householdSize" value="${state.profile.householdSize}" min="1" inputmode="numeric"></label>
       <label>Allergens (comma-separated) <input name="allergens" value="${(state.profile.allergens || []).join(', ')}"></label>
-      <button type="submit">Save</button>
+      <button type="submit">Save goal & allergens</button>
     </form>
+    <div class="card">
+      <h3>Household (${size})</h3>
+      <p>Each person has their own biometrics. Targets and serving scaling use these.</p>
+      <div id="members-list">
+        ${members.map((m, i) => `
+          <div class="card" style="margin-bottom:0.5rem; padding:0.75rem;">
+            <strong>${m.name || 'Person ' + (i+1)}</strong>
+            <form data-member="${i}" style="margin-top:0.5rem;">
+              <label>Name <input name="name" value="${m.name || ''}"></label>
+              <label>Sex
+                <select name="sex">
+                  <option value="female" ${m.sex === 'female' ? 'selected' : ''}>Female</option>
+                  <option value="male" ${m.sex === 'male' ? 'selected' : ''}>Male</option>
+                </select>
+              </label>
+              <label>Age <input type="number" name="age" value="${m.age || 30}" min="1" max="120"></label>
+              <label>Height <input type="number" name="heightFt" value="${m.heightFt || 5}" min="3" max="8" style="width:50px;"> ft
+                <input type="number" name="heightIn" value="${m.heightIn || 6}" min="0" max="11" style="width:50px;"> in</label>
+              <label>Weight (lb) <input type="number" name="weightLb" value="${m.weightLb || 150}" min="50" max="500"></label>
+              <label>Activity
+                <select name="activity">
+                  <option value="sedentary" ${m.activity === 'sedentary' ? 'selected' : ''}>Sedentary</option>
+                  <option value="light" ${m.activity === 'light' ? 'selected' : ''}>Light</option>
+                  <option value="moderate" ${m.activity === 'moderate' ? 'selected' : ''}>Moderate</option>
+                  <option value="active" ${m.activity === 'active' ? 'selected' : ''}>Active</option>
+                </select>
+              </label>
+              <label>Goal
+                <select name="goal">
+                  <option value="balanced" ${m.goal === 'balanced' ? 'selected' : ''}>Balanced</option>
+                  <option value="performance" ${m.goal === 'performance' ? 'selected' : ''}>Performance</option>
+                  <option value="keto" ${m.goal === 'keto' ? 'selected' : ''}>Keto</option>
+                </select>
+              </label>
+              <button type="submit">Save</button>
+              ${members.length > 1 ? `<button type="button" data-remove="${i}" style="margin-left:0.5rem;">Remove</button>` : ''}
+            </form>
+          </div>
+        `).join('')}
+      </div>
+      <button id="add-member" type="button">Add person</button>
+    </div>
     <div class="card">
       <h3>Data</h3>
       <button id="export-btn">Export JSON backup</button>
@@ -240,35 +283,57 @@ function renderSettings() {
     e.preventDefault();
     const form = new FormData(e.target);
     const allergens = (form.get('allergens') || '').split(',').map(s => s.trim()).filter(Boolean);
-    const newProfile = { ...state.profile, goal: form.get('goal'), householdSize: Number(form.get('householdSize')), allergens };
-    const conflicts = checkConflicts(state, newProfile);
-    const conflictEl = document.getElementById('conflicts');
-    if (conflicts.length) {
-      conflictEl.hidden = false;
-      conflictEl.innerHTML = `<h3>${conflicts.length} conflicting meal(s)</h3><ul>${conflicts.map(c => `<li>${c.date} ${c.slot}: ${c.name} (${c.reasons.join(', ')})</li>`).join('')}</ul><button id="swap-all">Swap conflicting</button> <button id="keep-all">Keep</button>`;
-      document.getElementById('swap-all').addEventListener('click', () => {
-        conflicts.forEach(c => {
-          const day = state.days[c.date];
-          if (day && day[c.slot]) day[c.slot] = null;
-        });
-        state.profile = newProfile;
-        saveState();
-        renderSettings();
-      });
-      document.getElementById('keep-all').addEventListener('click', () => {
-        state.profile = newProfile;
-        saveState();
-        conflictEl.hidden = true;
-        renderSettings();
-      });
-    } else {
-      state.profile = newProfile;
-      saveState();
-      conflictEl.hidden = true;
-      renderSettings();
-    }
+    state.profile.goal = form.get('goal');
+    state.profile.allergens = allergens;
+    state.profile.householdSize = (state.profile.members || []).length || 1;
+    saveState();
+    renderSettings();
   });
-  // Data integrity
+  el.querySelectorAll('form[data-member]').forEach(form => {
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const i = Number(form.dataset.member);
+      const fd = new FormData(form);
+      const m = state.profile.members[i];
+      m.name = fd.get('name') || m.name;
+      m.sex = fd.get('sex');
+      m.age = Number(fd.get('age'));
+      m.heightFt = Number(fd.get('heightFt'));
+      m.heightIn = Number(fd.get('heightIn'));
+      m.weightLb = Number(fd.get('weightLb'));
+      m.activity = fd.get('activity');
+      m.goal = fd.get('goal');
+      state.profile.householdSize = state.profile.members.length;
+      saveState();
+      renderSettings();
+    });
+  });
+  el.querySelectorAll('[data-remove]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = Number(btn.dataset.remove);
+      state.profile.members.splice(i, 1);
+      state.profile.householdSize = state.profile.members.length || 1;
+      saveState();
+      renderSettings();
+    });
+  });
+  document.getElementById('add-member')?.addEventListener('click', () => {
+    if (!state.profile.members) state.profile.members = [];
+    state.profile.members.push({
+      id: 'm' + Date.now(),
+      name: 'Person ' + (state.profile.members.length + 1),
+      sex: 'female',
+      age: 30,
+      heightFt: 5,
+      heightIn: 6,
+      weightLb: 150,
+      activity: 'light',
+      goal: state.profile.goal || 'balanced'
+    });
+    state.profile.householdSize = state.profile.members.length;
+    saveState();
+    renderSettings();
+  });
   document.getElementById('export-btn')?.addEventListener('click', () => {
     const blob = new Blob([exportData()], { type: 'application/json' });
     const a = document.createElement('a');
@@ -282,20 +347,16 @@ function renderSettings() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      if (importData(reader.result)) {
-        alert('Import successful');
-        location.reload();
-      } else alert('Import failed');
+      if (importData(reader.result)) renderSettings();
+      else alert('Import failed');
     };
     reader.readAsText(file);
   });
   document.getElementById('reset-btn')?.addEventListener('click', () => {
-    if (confirm('Reset all data? This cannot be undone.')) {
-      resetData();
-      location.reload();
-    }
+    if (confirm('Reset all data?')) { resetData(); renderSettings(); }
   });
 }
+
 
 function renderMeals() {
   const allMeals = getAllMeals();

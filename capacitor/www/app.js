@@ -59,9 +59,10 @@ function smartNumber(n) {
 }
 
 export function computeDailyNutrition(plannedMeals, householdSize = 1) {
+  const size = typeof householdSize === 'object' ? getHouseholdSize(householdSize) : householdSize;
   const totals = { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 };
   plannedMeals.forEach(meal => {
-    const scale = householdSize / (meal.servings || 1);
+    const scale = size / (meal.servings || 1);
     const nut = meal.protein != null ? meal : computeNutritionFromIngredients(meal.ingredients || [], meal.servings || 1);
     totals.calories += (nut.calories || nut.protein * 4 + nut.carbs * 4 + nut.fat * 9 || 0) * scale;
     totals.protein += (nut.protein || 0) * scale;
@@ -74,11 +75,47 @@ export function computeDailyNutrition(plannedMeals, householdSize = 1) {
 }
 
 export function getTargets(profile) {
-  // Simple targets based on goal
-  const base = profile.goal === 'keto' ? { calories: 1800, protein: 120, carbs: 30, fat: 140 } :
-               profile.goal === 'performance' ? { calories: 2200, protein: 160, carbs: 250, fat: 70 } :
-               { calories: 1920, protein: 100, carbs: 200, fat: 65 };
-  return base;
+  const members = profile.members || [];
+  if (!members.length) {
+    // fallback single-person
+    return profile.goal === 'keto' ? { calories: 1800, protein: 120, carbs: 30, fat: 140 } :
+           profile.goal === 'performance' ? { calories: 2200, protein: 160, carbs: 250, fat: 70 } :
+           { calories: 1920, protein: 100, carbs: 200, fat: 65 };
+  }
+  const totals = { calories: 0, protein: 0, carbs: 0, fat: 0 };
+  members.forEach(m => {
+    const t = estimatePersonTargets(m);
+    totals.calories += t.calories;
+    totals.protein += t.protein;
+    totals.carbs += t.carbs;
+    totals.fat += t.fat;
+  });
+  return totals;
+}
+
+function estimatePersonTargets(m) {
+  // Mifflin-St Jeor BMR + activity multiplier, then adjust by goal
+  const kg = (m.weightLb || 150) * 0.453592;
+  const cm = ((m.heightFt || 5) * 12 + (m.heightIn || 6)) * 2.54;
+  const age = m.age || 30;
+  const sex = (m.sex || 'female').toLowerCase();
+  let bmr = 10 * kg + 6.25 * cm - 5 * age;
+  bmr += sex === 'male' ? 5 : -161;
+  const activity = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very: 1.9 }[m.activity || 'light'] || 1.375;
+  let tdee = bmr * activity;
+  const goal = m.goal || 'balanced';
+  if (goal === 'keto') tdee *= 0.9;
+  if (goal === 'performance') tdee *= 1.1;
+  const calories = Math.round(tdee);
+  // simple macro split
+  let protein = Math.round((m.weightLb || 150) * (goal === 'performance' ? 0.9 : 0.7));
+  let fat = Math.round(calories * (goal === 'keto' ? 0.7 : 0.3) / 9);
+  let carbs = Math.max(0, Math.round((calories - protein * 4 - fat * 9) / 4));
+  return { calories, protein, carbs, fat };
+}
+
+export function getHouseholdSize(profile) {
+  return (profile.members || []).length || profile.householdSize || 1;
 }
 export function computeCost(mealsInPlan, householdSize = 1, priceOverrides = {}) {
   let totalCents = 0;
@@ -191,16 +228,21 @@ function loadState() {
     schemaVersion: SCHEMA_VERSION,
     profile: {
       householdSize: 1,
-      sex: "female",
-      age: 34,
-      heightFt: 5,
-      heightIn: 6,
-      weightLb: 150,
-      activity: "light",
       goal: "balanced",
-      budget: false,
-      quick: false,
       allergens: [],
+      members: [
+        {
+          id: "m1",
+          name: "You",
+          sex: "female",
+          age: 34,
+          heightFt: 5,
+          heightIn: 6,
+          weightLb: 150,
+          activity: "light",
+          goal: "balanced"
+        }
+      ],
       sample: false
     },
     days: {},
