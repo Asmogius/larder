@@ -1,0 +1,96 @@
+/* Larder Improved — Editorial visual style
+   Calm, paper-like, high contrast, 16px+ body text.
+   Accessible focus rings, proper contrast.
+*/
+:root {
+  --ink: #1a1a1a;
+  --muted: #5c5c5c;
+  --surface: #f7f4ef;
+  --border: #e0dcd4;
+  --primary: #2c3e50;
+  --on-primary: #fff;
+  --danger: #b00020;
+  --focus: #005fcc;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--surface);
+  margin: 0;
+  padding: 1rem;
+}
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--primary);
+  color: var(--on-primary);
+  padding: 8px;
+  z-index: 100;
+}
+.skip-link:focus { top: 0; }
+header { margin-bottom: 2rem; }
+h1 { font-size: 2rem; margin: 0; }
+.tagline { color: var(--muted); margin: 0.25rem 0 1rem; }
+nav { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+@media (max-width: 768px) {
+  nav a { min-width: 44px; justify-content: center; }
+}
+nav a:focus-visible, button:focus-visible, input:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.page { max-width: 800px; }
+.card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+button, .btn {
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  border-radius: 999px;
+  border: none;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 600;
+  cursor: pointer;
+}
+input, select {
+  min-height: 44px;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+  font-size: 16px;
+}
+.error { color: var(--danger); font-size: 0.875rem; margin-top: 0.25rem; min-height: 1.2em; }
+[role="alert"] { background: #ffebee; padding: 0.5rem; border-radius: 8px; margin-bottom: 1rem; }
+label { display: block; margin-bottom: 0.75rem; }
+input, select { width: 100%; max-width: 400px; }
+
+[role="alert"] { background: #ffebee; padding: 0.5rem; border-radius: 8px; margin-bottom: 1rem; }
+/* Phase 4 polish: better mobile and a11y */
+@media (max-width: 768px) {
+  .meal-slot { font-size: 0.9rem; }
+  #cook-overlay { font-size: 1.1rem; }
+}
+[role="dialog"] button:focus-visible { outline: 3px solid var(--focus); }
+@media (max-width: 375px) {
+  body { padding: 0.5rem; }
+  nav a { display: block; margin: 0.5rem 0; }
+}
+.week-day { cursor: grab; }
+.week-day:active { cursor: grabbing; }
+@media (max-width: 375px) {
+  .card { padding: 0.75rem; }
+  button, .btn { width: 100%; margin-bottom: 0.5rem; }
+}
+@media (display-mode: standalone) {
+  body { padding-top: env(safe-area-inset-top); }
+}
