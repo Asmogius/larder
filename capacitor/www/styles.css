@@ -210,9 +210,46 @@ label { display: block; margin-bottom: 0.85rem; font-weight: 500; }
   opacity: 0.45;
   transform: scale(0.98);
 }
+.meal-slot.selected {
+  background: var(--primary);
+  color: var(--on-primary);
+  border-color: var(--primary);
+}
+.meal-slot.selected .slot-label,
+.meal-slot.selected .slot-name { color: var(--on-primary); }
 .meal-slot.drop-target {
   border: 2px dashed var(--primary);
   background: var(--primary-soft);
+}
+#move-hint { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+
+/* Mobile improvements */
+@media (max-width: 640px) {
+  header { padding: 0.75rem 1rem; }
+  main { padding: 1rem 0.75rem 5rem; }
+  #week-days { grid-template-columns: 1fr; }
+  nav {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 0.25rem;
+  }
+  nav::-webkit-scrollbar { display: none; }
+  nav a {
+    flex: 0 0 auto;
+    padding: 0.55rem 0.9rem;
+    font-size: 0.9rem;
+    min-height: 44px;
+  }
+  .meal-slot { min-height: 52px; padding: 0.7rem 0.8rem; }
+  button, .btn { width: 100%; margin-bottom: 0.4rem; }
+  .week-actions button { width: auto; }
+  .card { padding: 1rem; }
+}
+@media (display-mode: standalone) {
+  body { padding-top: env(safe-area-inset-top); }
+  main { padding-bottom: calc(5rem + env(safe-area-inset-bottom)); }
 }
 .slot-label {
   font-size: 0.75rem;

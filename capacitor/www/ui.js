@@ -733,6 +733,7 @@ function renderReview() {
 
 function renderWeek() {
   const el = document.getElementById('week-content');
+  const isTouch = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
   const daysHtml = [];
   const today = new Date();
   for (let i = 0; i < 7; i++) {
@@ -744,7 +745,7 @@ function renderWeek() {
       const entry = day[slot];
       const name = entry ? (getAllMeals().find(m => m.id === entry.mealId)?.name || 'Meal') : '';
       const has = !!entry;
-      return `<div class="meal-slot" draggable="${has}" data-date="${key}" data-slot="${slot}">
+      return `<div class="meal-slot" draggable="${has && !isTouch}" data-date="${key}" data-slot="${slot}" data-has="${has}">
         <span class="slot-label">${slot}</span>
         <span class="slot-name${has ? '' : ' slot-empty'}">${has ? name : 'Empty'}${entry?.leftover ? ' · leftover' : ''}</span>
       </div>`;
@@ -755,59 +756,97 @@ function renderWeek() {
       <div class="week-actions"><button class="secondary" data-copy="${key}">Copy day</button></div>
     </div>`);
   }
-  el.innerHTML = `<p style="color:var(--muted);margin-bottom:1rem;">Drag meals between days or slots. Drop on a day to move.</p><div id="week-days">${daysHtml.join('')}</div>`;
+  el.innerHTML = `<p style="color:var(--muted);margin-bottom:1rem;">${isTouch ? 'Tap a meal, then tap another slot to move it.' : 'Drag meals between days or slots.'}</p>
+    <div id="move-hint" hidden style="background:var(--primary-soft);padding:0.6rem 1rem;border-radius:8px;margin-bottom:1rem;font-weight:500;">Select a destination slot, or tap Cancel.</div>
+    <div id="week-days">${daysHtml.join('')}</div>`;
 
-  let dragged = null;
-  el.querySelectorAll('.meal-slot[draggable="true"]').forEach(slotEl => {
-    slotEl.addEventListener('dragstart', e => {
-      dragged = slotEl;
-      slotEl.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', JSON.stringify({ date: slotEl.dataset.date, slot: slotEl.dataset.slot }));
+  let selected = null; // {date, slot} for touch mode
+
+  function clearSelection() {
+    selected = null;
+    el.querySelectorAll('.selected, .drop-target').forEach(n => n.classList.remove('selected', 'drop-target'));
+    document.getElementById('move-hint').hidden = true;
+  }
+
+  function doMove(fromDate, fromSlot, toDate, toSlot) {
+    if (fromDate === toDate && fromSlot === toSlot) { clearSelection(); return; }
+    const fromDay = state.days[fromDate];
+    if (!fromDay || !fromDay[fromSlot]) { clearSelection(); return; }
+    pushUndo({ label: 'move meal' });
+    if (!state.days[toDate]) state.days[toDate] = { breakfast: null, lunch: null, dinner: null };
+    const existing = state.days[toDate][toSlot];
+    state.days[toDate][toSlot] = fromDay[fromSlot];
+    fromDay[fromSlot] = existing || null;
+    saveState();
+    showUndoToast('Meal moved');
+    clearSelection();
+    renderWeek();
+  }
+
+  // Desktop HTML5 drag
+  if (!isTouch) {
+    el.querySelectorAll('.meal-slot[draggable="true"]').forEach(slotEl => {
+      slotEl.addEventListener('dragstart', e => {
+        slotEl.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', JSON.stringify({ date: slotEl.dataset.date, slot: slotEl.dataset.slot }));
+      });
+      slotEl.addEventListener('dragend', () => {
+        slotEl.classList.remove('dragging');
+        el.querySelectorAll('.drag-over, .drop-target').forEach(n => n.classList.remove('drag-over', 'drop-target'));
+      });
     });
-    slotEl.addEventListener('dragend', () => {
-      slotEl.classList.remove('dragging');
-      el.querySelectorAll('.drag-over, .drop-target').forEach(n => n.classList.remove('drag-over', 'drop-target'));
-      dragged = null;
+    el.querySelectorAll('.week-day').forEach(dayEl => {
+      dayEl.addEventListener('dragover', e => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        dayEl.classList.add('drag-over');
+        const target = e.target.closest('.meal-slot');
+        el.querySelectorAll('.drop-target').forEach(n => n.classList.remove('drop-target'));
+        if (target) target.classList.add('drop-target');
+      });
+      dayEl.addEventListener('dragleave', e => {
+        if (!dayEl.contains(e.relatedTarget)) dayEl.classList.remove('drag-over');
+      });
+      dayEl.addEventListener('drop', e => {
+        e.preventDefault();
+        dayEl.classList.remove('drag-over');
+        el.querySelectorAll('.drop-target').forEach(n => n.classList.remove('drop-target'));
+        const data = JSON.parse(e.dataTransfer.getData('text/plain') || '{}');
+        const toDate = dayEl.dataset.date;
+        const toSlot = e.target.closest('.meal-slot')?.dataset.slot || 'dinner';
+        doMove(data.date, data.slot, toDate, toSlot);
+      });
     });
-  });
-  el.querySelectorAll('.week-day').forEach(dayEl => {
-    dayEl.addEventListener('dragover', e => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      dayEl.classList.add('drag-over');
-      const target = e.target.closest('.meal-slot');
-      el.querySelectorAll('.drop-target').forEach(n => n.classList.remove('drop-target'));
-      if (target) target.classList.add('drop-target');
-    });
-    dayEl.addEventListener('dragleave', e => {
-      if (!dayEl.contains(e.relatedTarget)) dayEl.classList.remove('drag-over');
-    });
-    dayEl.addEventListener('drop', e => {
-      e.preventDefault();
-      dayEl.classList.remove('drag-over');
-      el.querySelectorAll('.drop-target').forEach(n => n.classList.remove('drop-target'));
-      const data = JSON.parse(e.dataTransfer.getData('text/plain') || '{}');
-      const toDate = dayEl.dataset.date;
-      const toSlot = e.target.closest('.meal-slot')?.dataset.slot || 'dinner';
-      if (data.date && data.slot && (data.date !== toDate || data.slot !== toSlot)) {
-        const fromDay = state.days[data.date];
-        if (fromDay && fromDay[data.slot]) {
-          pushUndo({ label: 'move meal' });
-          if (!state.days[toDate]) state.days[toDate] = { breakfast: null, lunch: null, dinner: null };
-          // swap if target occupied
-          const existing = state.days[toDate][toSlot];
-          state.days[toDate][toSlot] = fromDay[data.slot];
-          fromDay[data.slot] = existing || null;
-          saveState();
-          showUndoToast('Meal moved');
-          renderWeek();
+  }
+
+  // Touch / coarse pointer: tap to select, tap to move
+  if (isTouch) {
+    el.querySelectorAll('.meal-slot').forEach(slotEl => {
+      slotEl.addEventListener('click', e => {
+        const date = slotEl.dataset.date;
+        const slot = slotEl.dataset.slot;
+        const has = slotEl.dataset.has === 'true';
+        if (!selected) {
+          if (!has) return;
+          selected = { date, slot };
+          slotEl.classList.add('selected');
+          el.querySelectorAll('.meal-slot').forEach(s => {
+            if (s !== slotEl) s.classList.add('drop-target');
+          });
+          document.getElementById('move-hint').hidden = false;
+        } else {
+          doMove(selected.date, selected.slot, date, slot);
         }
-      }
+      });
     });
-  });
+    document.getElementById('move-hint').insertAdjacentHTML('beforeend', ' <button type="button" id="cancel-move" class="secondary" style="margin-left:0.5rem;min-height:32px;padding:0.2rem 0.7rem;">Cancel</button>');
+    document.getElementById('cancel-move')?.addEventListener('click', clearSelection);
+  }
+
   el.querySelectorAll('[data-copy]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
       const from = btn.dataset.copy;
       const next = new Date(from);
       next.setDate(next.getDate() + 1);
