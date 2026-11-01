@@ -732,6 +732,7 @@ function renderReview() {
 }
 
 function renderWeek() {
+  const el = document.getElementById('week-content');
   const daysHtml = [];
   const today = new Date();
   for (let i = 0; i < 7; i++) {
@@ -741,32 +742,63 @@ function renderWeek() {
     const day = state.days[key] || {};
     const slots = ['breakfast', 'lunch', 'dinner'].map(slot => {
       const entry = day[slot];
-      const name = entry ? (getAllMeals().find(m => m.id === entry.mealId)?.name || 'Meal') : '—';
-      return `<div class="meal-slot" draggable="${!!entry}" data-date="${key}" data-slot="${slot}" style="padding:0.25rem; margin:0.25rem 0; background:#f0f0f0; border-radius:4px; cursor:${entry ? 'grab' : 'default'};">${slot}: ${name}${entry?.leftover ? ' (leftover)' : ''}</div>`;
+      const name = entry ? (getAllMeals().find(m => m.id === entry.mealId)?.name || 'Meal') : '';
+      const has = !!entry;
+      return `<div class="meal-slot" draggable="${has}" data-date="${key}" data-slot="${slot}">
+        <span class="slot-label">${slot}</span>
+        <span class="slot-name${has ? '' : ' slot-empty'}">${has ? name : 'Empty'}${entry?.leftover ? ' · leftover' : ''}</span>
+      </div>`;
     }).join('');
-    daysHtml.push(`<div class="card week-day" data-date="${key}"><strong>${d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</strong><br>${slots}<button data-copy="${key}" style="margin-top:0.5rem; font-size:0.8rem;">Copy day</button></div>`);
+    daysHtml.push(`<div class="week-day" data-date="${key}">
+      <div class="week-day-header">${d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</div>
+      ${slots}
+      <div class="week-actions"><button class="secondary" data-copy="${key}">Copy day</button></div>
+    </div>`);
   }
-  el.innerHTML = `<p>Week. Drag meals between slots/days. Copy a day to the next.</p><div id="week-days">${daysHtml.join('')}</div>`;
-  // Meal drag-and-drop
+  el.innerHTML = `<p style="color:var(--muted);margin-bottom:1rem;">Drag meals between days or slots. Drop on a day to move.</p><div id="week-days">${daysHtml.join('')}</div>`;
+
+  let dragged = null;
   el.querySelectorAll('.meal-slot[draggable="true"]').forEach(slotEl => {
     slotEl.addEventListener('dragstart', e => {
+      dragged = slotEl;
+      slotEl.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', JSON.stringify({ date: slotEl.dataset.date, slot: slotEl.dataset.slot }));
+    });
+    slotEl.addEventListener('dragend', () => {
+      slotEl.classList.remove('dragging');
+      el.querySelectorAll('.drag-over, .drop-target').forEach(n => n.classList.remove('drag-over', 'drop-target'));
+      dragged = null;
     });
   });
   el.querySelectorAll('.week-day').forEach(dayEl => {
-    dayEl.addEventListener('dragover', e => e.preventDefault());
+    dayEl.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      dayEl.classList.add('drag-over');
+      const target = e.target.closest('.meal-slot');
+      el.querySelectorAll('.drop-target').forEach(n => n.classList.remove('drop-target'));
+      if (target) target.classList.add('drop-target');
+    });
+    dayEl.addEventListener('dragleave', e => {
+      if (!dayEl.contains(e.relatedTarget)) dayEl.classList.remove('drag-over');
+    });
     dayEl.addEventListener('drop', e => {
       e.preventDefault();
+      dayEl.classList.remove('drag-over');
+      el.querySelectorAll('.drop-target').forEach(n => n.classList.remove('drop-target'));
       const data = JSON.parse(e.dataTransfer.getData('text/plain') || '{}');
       const toDate = dayEl.dataset.date;
       const toSlot = e.target.closest('.meal-slot')?.dataset.slot || 'dinner';
       if (data.date && data.slot && (data.date !== toDate || data.slot !== toSlot)) {
         const fromDay = state.days[data.date];
         if (fromDay && fromDay[data.slot]) {
-          pushUndo({ restore: () => { /* simple restore stub */ } });
+          pushUndo({ label: 'move meal' });
           if (!state.days[toDate]) state.days[toDate] = { breakfast: null, lunch: null, dinner: null };
+          // swap if target occupied
+          const existing = state.days[toDate][toSlot];
           state.days[toDate][toSlot] = fromDay[data.slot];
-          fromDay[data.slot] = null;
+          fromDay[data.slot] = existing || null;
           saveState();
           showUndoToast('Meal moved');
           renderWeek();
@@ -787,6 +819,7 @@ function renderWeek() {
     });
   });
 }
+
 
 // Basic Cook mode (P2 #14 foundation): step-by-step, Escape to close, arrow keys, simple timer
 function openCookMode(meal) {

@@ -1,95 +1,269 @@
-/* Larder Improved — Editorial visual style
-   Calm, paper-like, high contrast, 16px+ body text.
-   Accessible focus rings, proper contrast.
+/* Larder — Professional editorial UI
+   Calm paper surface, refined type, clear hierarchy, polished interactions.
 */
 :root {
-  --ink: #1a1a1a;
-  --muted: #5c5c5c;
-  --surface: #f7f4ef;
-  --border: #e0dcd4;
-  --primary: #2c3e50;
+  --ink: #1c1917;
+  --muted: #78716c;
+  --surface: #faf8f5;
+  --card: #ffffff;
+  --border: #e7e5e4;
+  --border-strong: #d6d3d1;
+  --primary: #1e3a5f;
+  --primary-soft: #e8eef5;
   --on-primary: #fff;
-  --danger: #b00020;
-  --focus: #005fcc;
+  --accent: #b45309;
+  --danger: #b91c1c;
+  --success: #15803d;
+  --focus: #2563eb;
+  --shadow: 0 1px 2px rgba(28,25,23,0.04), 0 4px 12px rgba(28,25,23,0.06);
+  --radius: 12px;
+  --radius-sm: 8px;
 }
 * { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   font-size: 16px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--ink);
   background: var(--surface);
   margin: 0;
-  padding: 1rem;
+  padding: 0;
+  min-height: 100vh;
 }
 .skip-link {
   position: absolute;
-  top: -40px;
-  left: 0;
+  top: -48px;
+  left: 12px;
   background: var(--primary);
   color: var(--on-primary);
-  padding: 8px;
-  z-index: 100;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  z-index: 200;
+  font-weight: 600;
 }
-.skip-link:focus { top: 0; }
-header { margin-bottom: 2rem; }
-h1 { font-size: 2rem; margin: 0; }
-.tagline { color: var(--muted); margin: 0.25rem 0 1rem; }
-nav { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-@media (max-width: 768px) {
-  nav a { min-width: 44px; justify-content: center; }
+.skip-link:focus { top: 12px; }
+
+/* Header */
+header {
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  padding: 1.25rem 1.5rem 1rem;
+  position: sticky;
+  top: 0;
+  z-index: 50;
 }
-nav a:focus-visible, button:focus-visible, input:focus-visible {
-  outline: 3px solid var(--focus);
+h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0;
+  color: var(--ink);
+}
+.tagline {
+  color: var(--muted);
+  margin: 0.15rem 0 1rem;
+  font-size: 0.95rem;
+}
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+nav a {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.45rem 0.9rem;
+  border-radius: 999px;
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 0.95rem;
+  border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+nav a:hover { background: var(--primary-soft); }
+nav a:focus-visible {
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
-.page { max-width: 800px; }
-.card {
-  background: white;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1rem;
-  margin-bottom: 1rem;
+nav a[aria-current="page"] {
+  background: var(--primary);
+  color: var(--on-primary);
 }
+
+/* Layout */
+main { padding: 1.5rem; max-width: 960px; margin: 0 auto; }
+.page { display: none; }
+.page:not([hidden]) { display: block; }
+h2 {
+  font-size: 1.4rem;
+  font-weight: 650;
+  margin: 0 0 1rem;
+  letter-spacing: -0.01em;
+}
+
+/* Cards */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow);
+}
+.card h3 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+
+/* Buttons & inputs */
 button, .btn {
   min-height: 44px;
-  padding: 0.5rem 1rem;
+  padding: 0.5rem 1.1rem;
   border-radius: 999px;
   border: none;
   background: var(--primary);
   color: var(--on-primary);
   font-weight: 600;
+  font-size: 0.95rem;
   cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
 }
-input, select {
+button:hover { background: #162d4a; }
+button:active { transform: scale(0.98); }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+button.secondary {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--border-strong);
+}
+button.secondary:hover { background: var(--primary-soft); }
+input, select, textarea {
   min-height: 44px;
-  padding: 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   background: white;
   font-size: 16px;
+  width: 100%;
+  max-width: 420px;
+  transition: border-color 0.15s;
 }
-.error { color: var(--danger); font-size: 0.875rem; margin-top: 0.25rem; min-height: 1.2em; }
-[role="alert"] { background: #ffebee; padding: 0.5rem; border-radius: 8px; margin-bottom: 1rem; }
-label { display: block; margin-bottom: 0.75rem; }
-input, select { width: 100%; max-width: 400px; }
+input:focus, select:focus, textarea:focus { border-color: var(--focus); }
+label { display: block; margin-bottom: 0.85rem; font-weight: 500; }
+.error { color: var(--danger); font-size: 0.875rem; margin-top: 0.25rem; }
+[role="alert"] {
+  background: #fef2f2;
+  color: var(--danger);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid #fecaca;
+  margin-bottom: 1rem;
+}
 
-[role="alert"] { background: #ffebee; padding: 0.5rem; border-radius: 8px; margin-bottom: 1rem; }
-/* Phase 4 polish: better mobile and a11y */
-@media (max-width: 768px) {
-  .meal-slot { font-size: 0.9rem; }
-  #cook-overlay { font-size: 1.1rem; }
+/* Week view & drag-and-drop */
+#week-days {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
 }
-[role="dialog"] button:focus-visible { outline: 3px solid var(--focus); }
-@media (max-width: 375px) {
-  body { padding: 0.5rem; }
-  nav a { display: block; margin: 0.5rem 0; }
+.week-day {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem;
+  box-shadow: var(--shadow);
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
-.week-day { cursor: grab; }
-.week-day:active { cursor: grabbing; }
-@media (max-width: 375px) {
-  .card { padding: 0.75rem; }
-  button, .btn { width: 100%; margin-bottom: 0.5rem; }
+.week-day.drag-over {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+  background: #f8fafc;
+}
+.week-day-header {
+  font-weight: 650;
+  margin-bottom: 0.6rem;
+  font-size: 0.95rem;
+}
+.meal-slot {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 0.7rem;
+  margin: 0.35rem 0;
+  background: #f5f5f4;
+  border: 1px dashed transparent;
+  border-radius: var(--radius-sm);
+  font-size: 0.92rem;
+  cursor: default;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  min-height: 44px;
+}
+.meal-slot[draggable="true"] {
+  cursor: grab;
+  background: #fff;
+  border: 1px solid var(--border);
+}
+.meal-slot[draggable="true"]:active { cursor: grabbing; }
+.meal-slot.dragging {
+  opacity: 0.45;
+  transform: scale(0.98);
+}
+.meal-slot.drop-target {
+  border: 2px dashed var(--primary);
+  background: var(--primary-soft);
+}
+.slot-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  min-width: 70px;
+  font-weight: 600;
+}
+.slot-name { flex: 1; font-weight: 500; }
+.slot-empty { color: var(--muted); font-style: italic; }
+.week-actions { margin-top: 0.6rem; display: flex; gap: 0.4rem; }
+.week-actions button { font-size: 0.85rem; padding: 0.35rem 0.8rem; min-height: 36px; }
+
+/* Today slots */
+.today-slot { margin-bottom: 0.75rem; }
+.today-slot h3 { font-size: 1rem; margin-bottom: 0.35rem; }
+.nutrition-bar {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin: 0.5rem 0;
+}
+.nutrition-bar strong { color: var(--ink); }
+
+/* Cook overlay */
+#cook-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--surface);
+  z-index: 1000;
+  padding: 1.5rem;
+  overflow: auto;
+}
+#cook-overlay h2 { margin-top: 0; }
+#step-text {
+  font-size: 1.25rem;
+  line-height: 1.6;
+  min-height: 8rem;
+}
+
+/* Mobile */
+@media (max-width: 640px) {
+  header { padding: 1rem; }
+  main { padding: 1rem; }
+  #week-days { grid-template-columns: 1fr; }
+  nav a { padding: 0.4rem 0.75rem; font-size: 0.9rem; }
+  button, .btn { width: 100%; margin-bottom: 0.4rem; }
+  .week-actions button { width: auto; }
 }
 @media (display-mode: standalone) {
   body { padding-top: env(safe-area-inset-top); }
