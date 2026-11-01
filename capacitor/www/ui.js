@@ -447,24 +447,17 @@ async function parseRecipeImport(input) {
   let blurb = '';
 
   if (/^https?:\/\//i.test(input)) {
-    // Try direct, then CORS proxies
-    const proxies = [
-      input,
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(input)}`,
-      `https://corsproxy.io/?${encodeURIComponent(input)}`
-    ];
-    for (const url of proxies) {
-      try {
-        const res = await fetch(url, { headers: { 'Accept': 'text/html' } });
-        if (res.ok) {
-          html = await res.text();
-          if (html && html.length > 200) break;
-        }
-      } catch (e) { /* try next */ }
-    }
-    if (!html) {
+    // Direct fetch only. In the Capacitor Android APK, CapacitorHttp (enabled in config)
+    // patches fetch to use native HTTP, bypassing CORS. In the browser this may fail.
+    try {
+      const res = await fetch(input, { headers: { 'Accept': 'text/html' } });
+      if (res.ok) {
+        html = await res.text();
+      }
+    } catch (e) { /* fall through */ }
+    if (!html || html.length < 200) {
       name = input.split('/').filter(Boolean).pop()?.replace(/[-_]/g, ' ') || 'Imported recipe';
-      return { name, ingredients: [], steps: [], servings: 2, blurb: 'URL fetch blocked. Paste the recipe text instead.' };
+      return { name, ingredients: [], steps: [], servings: 2, blurb: 'URL fetch blocked in the browser. In the Android app this works natively. Or paste the recipe text.' };
     }
   } else {
     html = input;
