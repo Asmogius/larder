@@ -138,7 +138,45 @@ export function getAllMeals() {
   return [...MEALS, ...(state.customMeals || [])];
 }
 
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.schemaVersion === SCHEMA_VERSION) return parsed;
+    }
+  } catch (e) {}
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    profile: {
+      householdSize: 1,
+      sex: "female",
+      age: 34,
+      heightFt: 5,
+      heightIn: 6,
+      weightLb: 150,
+      activity: "light",
+      goal: "balanced",
+      budget: false,
+      quick: false,
+      allergens: [],
+      sample: false
+    },
+    days: {},
+    customMeals: [],
+    pantry: [],
+    prices: {},
+    manualItems: []
+  };
+}
+
+export function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
 export function planLeftover(date, slot) {
+  const day = state.days[date];
+  if (!day || !day[slot]) return false;
   const tomorrow = new Date(date);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowKey = tomorrow.toISOString().slice(0, 10);
