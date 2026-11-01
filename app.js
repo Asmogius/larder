@@ -1,1 +1,1 @@
-/* full app.js content from local */
+/* placeholder - will replace */
