@@ -3,6 +3,7 @@
    Accessible focus, labels, role=alert.
 */
 import { state, saveState, MEALS, aggregateGrocery, computeCost, checkConflicts, validateRecipeForm, addToPantry, addCustomMeal, getAllMeals, getExpiringSoon, suggestUseItUp, markEatenAndDeduct, planLeftover, exportData, importData, resetData, copyDay, pushUndo, popUndo, computeDailyNutrition, getTargets, getHouseholdSize } from './app.js';
+import { matchIngredient, searchIngredients, estimateFromDb } from './ingredients-db.js';
 import { normalizeIngredient } from './data.js';
 
 function showUndoToast(message) {
@@ -558,10 +559,21 @@ function renderMeals() {
     document.getElementById('cancel-import-review')?.addEventListener('click', () => {
       document.getElementById('import-panel').hidden = true;
     });
-    document.getElementById('save-import')?.addEventListener('click', () => {
+    document.getElementById('save-import')?.addEventListener('click', async () => {
       const name = document.getElementById('imp-name').value.trim() || parsed.name;
       const servings = Number(document.getElementById('imp-servings').value) || 2;
       const blurb = document.getElementById('imp-blurb').value.trim();
+      const est = estimateFromDb(parsed.ingredients);
+      // Prompt for unmatched
+      for (const raw of est.unmatched) {
+        const picks = searchIngredients(raw, 5);
+        const choice = prompt(`No match for "${raw}". Pick a number or Cancel to skip:\n` + picks.map((p,i) => `${i+1}. ${p.name}`).join('\n'));
+        if (choice && picks[Number(choice)-1]) {
+          const db = picks[Number(choice)-1];
+          parsed.ingredients.find(i => i.name === raw).name = db.name;
+        }
+      }
+      const final = estimateFromDb(parsed.ingredients);
       addCustomMeal({
         name,
         slot: 'dinner',
@@ -569,8 +581,14 @@ function renderMeals() {
         blurb: blurb || 'Imported',
         ingredients: parsed.ingredients,
         steps: parsed.steps && parsed.steps.length ? parsed.steps : ['Review and edit.'],
-        centsPerServing: 200
+        centsPerServing: Math.round(final.costCents / Math.max(1, servings)),
+        calories: final.calories,
+        protein: final.protein,
+        carbs: final.carbs,
+        fat: final.fat,
+        fiber: final.fiber
       });
+      showUndoToast(`Saved with ${final.matched} matched ingredients`);
       document.getElementById('import-panel').hidden = true;
       renderMeals();
     });
