@@ -1,3 +1,21 @@
+# Larder
+
+A private, local-only meal planner: plan your week, get a live shopping list, track your pantry, and cook step by step. Your data stays on your device.
+
+## Install on your Android phone
+
+1. On your phone, open the **[latest release](https://github.com/Asmogius/larder/releases/latest)** and tap **larder.apk** to download it. (Direct link: [larder.apk](https://github.com/Asmogius/larder/releases/latest/download/larder.apk))
+2. Open the downloaded file from your notifications or your **Downloads** folder.
+3. If Android says installs from this source aren't allowed, tap **Settings**, turn on **Allow from this source** for your browser or Files app, then go back and tap **Install**.
+4. If Google Play Protect warns about an unknown app, tap **More details**, then **Install anyway**. The app is signed with a development key, not distributed through the Play Store.
+5. Open **Larder** from your app drawer.
+
+**Updating:** download the newest `larder.apk` the same way and install it over the old one. Your plans, recipes and pantry are kept.
+
+**Requirements:** Android 6.0 or newer. iPhone isn't supported as an app yet.
+
+---
+
 ## Recommendations completed
 
 ### 1. Nutrition accuracy ✅
