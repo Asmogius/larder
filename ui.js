@@ -271,7 +271,7 @@ function renderShop() {
   });
   document.getElementById('copy-list')?.addEventListener('click', () => {
     const text = list.map(i => `${i.display} ${i.canon.name}`).join('\n');
-    navigator.clipboard.writeText(text).then(() => alert('List copied'));
+    navigator.clipboard.writeText(text).then(() => showUndoToast('List copied'));
   });
   document.getElementById('share-list')?.addEventListener('click', () => {
     const text = list.map(i => `${i.display} ${i.canon.name}`).join('\n');
