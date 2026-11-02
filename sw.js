@@ -1,6 +1,6 @@
 // Improved service worker for offline (Phase F)
-const CACHE = 'larder-v2';
-const ASSETS = ['/', '/index.html', '/styles.css', '/app.js', '/ui.js', '/data.js', '/manifest.webmanifest'];
+const CACHE = 'larder-v3';
+const ASSETS = ['/', '/index.html', '/styles.css', '/app.js', '/ui.js', '/data.js', '/ingredients-db.js', '/tests.js', '/manifest.webmanifest'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
