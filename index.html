@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Larder — The week's meals, on paper</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="manifest" href="manifest.webmanifest">
@@ -14,55 +14,50 @@
     <h1>Larder</h1>
     <p class="tagline">The week's meals, on paper.</p>
     <nav aria-label="Primary" class="top-nav">
-      <a href="#today">Today</a>
-      <a href="#week">Week</a>
-      <a href="#meals">Meals</a>
-      <a href="#shop">Shop</a>
-      <a href="#pantry">Pantry</a>
-      <a href="#review">Review</a>
-      <a href="#settings">Settings</a>
+      <a href="#planner" data-page="planner">Meal planner</a>
+      <a href="#recipes" data-page="recipes">Recipes</a>
+      <a href="#shop" data-page="shop">Shop</a>
+      <a href="#pantry" data-page="pantry">Pantry</a>
+      <a href="#review" data-page="review">Review</a>
+      <a href="#settings" data-page="settings">Settings</a>
     </nav>
   </header>
   <main id="main">
-    <section id="today" class="page">
-      <h2>Today</h2>
-      <div id="today-content">Loading…</div>
+    <section id="planner" class="page" aria-labelledby="planner-title">
+      <h2 id="planner-title" tabindex="-1">Meal planner</h2>
+      <div id="planner-content">Loading…</div>
     </section>
-    <section id="week" class="page" hidden>
-      <h2>Week</h2>
-      <div id="week-content"></div>
+    <section id="recipes" class="page" hidden aria-labelledby="recipes-title">
+      <h2 id="recipes-title" tabindex="-1">Recipes</h2>
+      <div id="recipes-content"></div>
     </section>
-    <section id="meals" class="page" hidden>
-      <h2>The book</h2>
-      <div id="meals-content"></div>
-    </section>
-    <section id="shop" class="page" hidden>
-      <h2>Shop</h2>
+    <section id="shop" class="page" hidden aria-labelledby="shop-title">
+      <h2 id="shop-title" tabindex="-1">Shop</h2>
       <div id="shop-content"></div>
     </section>
-    <section id="pantry" class="page" hidden>
-      <h2>Pantry</h2>
+    <section id="pantry" class="page" hidden aria-labelledby="pantry-title">
+      <h2 id="pantry-title" tabindex="-1">Pantry</h2>
       <div id="pantry-content"></div>
     </section>
-    <section id="review" class="page" hidden>
-      <h2>Review</h2>
+    <section id="review" class="page" hidden aria-labelledby="review-title">
+      <h2 id="review-title" tabindex="-1">Review</h2>
       <div id="review-content"></div>
     </section>
-    <section id="settings" class="page" hidden>
-      <h2>Settings</h2>
+    <section id="settings" class="page" hidden aria-labelledby="settings-title">
+      <h2 id="settings-title" tabindex="-1">More &amp; settings</h2>
       <div id="settings-content"></div>
     </section>
   </main>
   <nav class="bottom-tabs" aria-label="Primary mobile">
-    <a href="#today" data-tab="today"><span>Today</span></a>
-    <a href="#week" data-tab="week"><span>Week</span></a>
-    <a href="#shop" data-tab="shop"><span>Shop</span></a>
-    <a href="#pantry" data-tab="pantry"><span>Pantry</span></a>
-    <a href="#settings" data-tab="more"><span>More</span></a>
+    <a href="#planner" data-page="planner"><span aria-hidden="true" class="tab-icon">▦</span><span>Planner</span></a>
+    <a href="#recipes" data-page="recipes"><span aria-hidden="true" class="tab-icon">❦</span><span>Recipes</span></a>
+    <a href="#shop" data-page="shop"><span aria-hidden="true" class="tab-icon">☰</span><span>Shop</span></a>
+    <a href="#pantry" data-page="pantry"><span aria-hidden="true" class="tab-icon">◫</span><span>Pantry</span></a>
+    <a href="#settings" data-page="settings review"><span aria-hidden="true" class="tab-icon">⋯</span><span>More</span></a>
   </nav>
   <div id="sheet-backdrop" hidden></div>
-  <div id="meal-sheet" class="bottom-sheet" hidden role="dialog" aria-modal="true">
-    <div class="sheet-handle"></div>
+  <div id="meal-sheet" class="bottom-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
     <h3 id="sheet-title">Meal</h3>
     <div id="sheet-actions"></div>
     <button type="button" id="sheet-close" class="secondary">Close</button>

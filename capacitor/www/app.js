@@ -7,8 +7,102 @@
 import { MEALS, CANONICAL_INGREDIENTS, normalizeIngredient, computeNutritionFromIngredients } from './data.js';
 export { MEALS };
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
+// Storage key kept from v4 so existing saved data is found and migrated in place.
 const STORAGE_KEY = "larder-improved-v4";
+export const SLOTS = ["breakfast", "lunch", "dinner"];
+
+// ---- Local date helpers (never use toISOString for day keys: it is UTC) ----
+export function dateKey(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+export function parseDateKey(key) {
+  const [y, m, d] = String(key).split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+export function addDays(key, n) {
+  const d = parseDateKey(key);
+  d.setDate(d.getDate() + n);
+  return dateKey(d);
+}
+// Weeks start on Monday
+export function weekStartOf(key) {
+  const d = parseDateKey(key);
+  const dow = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - dow);
+  return dateKey(d);
+}
+export function weekDays(startKey) {
+  return Array.from({ length: 7 }, (_, i) => addDays(startKey, i));
+}
+
+// Safe quantity parser: "1 1/2", "1/2", "1.5", "½"
+const UNICODE_FRACTIONS = { "¼": 0.25, "½": 0.5, "¾": 0.75, "⅓": 1 / 3, "⅔": 2 / 3, "⅛": 0.125 };
+export function parseQuantity(str) {
+  let total = 0;
+  const parts = String(str || "").trim().replace(/([¼½¾⅓⅔⅛])/g, " $1").split(/\s+/).filter(Boolean);
+  for (const part of parts) {
+    if (UNICODE_FRACTIONS[part] != null) total += UNICODE_FRACTIONS[part];
+    else if (/^\d+\/\d+$/.test(part)) { const [a, b] = part.split("/").map(Number); if (b) total += a / b; }
+    else if (!isNaN(parseFloat(part))) total += parseFloat(part);
+  }
+  return total || 1;
+}
+const KNOWN_UNITS = ["tsp", "teaspoon", "teaspoons", "tbsp", "tablespoon", "tablespoons", "cup", "cups", "oz", "ounce", "ounces", "lb", "lbs", "pound", "pounds", "g", "gram", "grams", "kg", "ml", "l", "can", "cans", "clove", "cloves", "pinch", "slice", "slices", "handful", "bunch", "package", "pkg", "jar", "stick", "sticks"];
+const UNIT_ALIASES = { teaspoon: "tsp", teaspoons: "tsp", tablespoon: "tbsp", tablespoons: "tbsp", cups: "cup", ounce: "oz", ounces: "oz", lbs: "lb", pound: "lb", pounds: "lb", gram: "g", grams: "g", cans: "can", cloves: "clove", slices: "slice", sticks: "stick", pkg: "package" };
+export function parseIngredientLine(line) {
+  const s = String(line).replace(/<[^>]+>/g, "").replace(/^[-*•]\s*/, "").trim();
+  if (!s) return { name: "", qty: 1, unit: "" };
+  const m = s.match(/^([\d\/\.\s¼½¾⅓⅔⅛]+)\s*(.*)$/);
+  if (m && /[\d¼½¾⅓⅔⅛]/.test(m[1])) {
+    const qty = parseQuantity(m[1]);
+    let rest = m[2].trim();
+    let unit = "";
+    const um = rest.match(/^([a-zA-Z]+)\.?\s+(.*)$/);
+    if (um && KNOWN_UNITS.includes(um[1].toLowerCase())) {
+      const u = um[1].toLowerCase();
+      unit = UNIT_ALIASES[u] || u;
+      rest = um[2].trim();
+    }
+    return { qty, unit, name: rest || s };
+  }
+  return { qty: 1, unit: "", name: s };
+}
+
+export function getRecipeSource(meal) {
+  if (!meal) return "builtin";
+  if (meal.source) return meal.source;
+  return meal.custom ? "custom" : "builtin";
+}
+function inferImported(meal) {
+  const steps = meal.steps || [];
+  return meal.sourceUrl || meal.blurb === "Imported" || /URL fetch blocked/.test(meal.blurb || "") ||
+    (steps.length === 1 && steps[0] === "Review and edit.");
+}
+
+// Bring any older (or imported-backup) state up to the current schema without losing data
+export function migrateState(data) {
+  const s = { ...data };
+  s.profile = s.profile || {};
+  s.profile.allergens = s.profile.allergens || [];
+  s.profile.goal = s.profile.goal || "balanced";
+  s.days = s.days || {};
+  s.customMeals = (s.customMeals || []).map(m => ({
+    ...m,
+    custom: true,
+    source: m.source || (inferImported(m) ? "imported" : "custom"),
+    ingredients: m.ingredients || [],
+    steps: m.steps || []
+  }));
+  s.pantry = s.pantry || [];
+  s.prices = s.prices || {};
+  s.manualItems = s.manualItems || [];
+  s.favorites = Array.isArray(s.favorites) ? s.favorites : [];
+  s.shopChecked = s.shopChecked || {};
+  s.ui = s.ui || { plannerView: "week" };
+  s.schemaVersion = SCHEMA_VERSION;
+  return s;
+}
 
 // Unit conversion helpers (volume, weight)
 const VOLUME_TO_TSP = {
@@ -124,10 +218,11 @@ export function computeCost(mealsInPlan, householdSize = 1, priceOverrides = {})
   const itemCosts = new Map();
   mealsInPlan.forEach(meal => {
     const scale = householdSize / (meal.servings || 1);
-    meal.ingredients.forEach(ing => {
+    (meal.ingredients || []).forEach(ing => {
+      if (!ing || !ing.name) return;
       const canon = normalizeIngredient(ing.name);
       const override = priceOverrides[canon.id];
-      const cents = override != null ? override * scale : (meal.centsPerServing || 200) * scale / Math.max(1, meal.ingredients.length);
+      const cents = override != null ? override * scale : (meal.centsPerServing || 200) * scale / Math.max(1, (meal.ingredients || []).length);
       totalCents += cents;
       const key = canon.id;
       itemCosts.set(key, (itemCosts.get(key) || 0) + cents);
@@ -142,10 +237,11 @@ export function aggregateGrocery(plannedMeals, options = { excludeEaten: true, d
   plannedMeals.forEach(pm => {
     if (options.excludeEaten && pm.status === "eaten") return;
     if (pm.status === "skipped") return;
-    const meal = MEALS.find(m => m.id === pm.mealId) || pm.custom;
-    if (!meal) return;
+    const meal = findMeal(pm.mealId) || pm.custom;
+    if (!meal || !meal.ingredients) return;
     const scale = (pm.servings || meal.servings || 1) / (meal.servings || 1);
     meal.ingredients.forEach(rawIng => {
+      if (!rawIng || !rawIng.name) return;
       const canon = normalizeIngredient(rawIng.name);
       const key = canon.id;
       if (!byCanon.has(key)) {
@@ -189,6 +285,35 @@ export function aggregateGrocery(plannedMeals, options = { excludeEaten: true, d
   })).sort((a, b) => a.aisle.localeCompare(b.aisle) || a.canon.name.localeCompare(b.canon.name));
 }
 
+// Subtract pantry stock from an aggregated grocery list.
+// Returns { need: [...items still to buy], have: [...items fully covered by pantry] }
+function toBase(qty, unit) {
+  const u = (unit || "").toLowerCase();
+  if (VOLUME_TO_TSP[u]) return { dim: "vol", v: qty * VOLUME_TO_TSP[u] };
+  if (WEIGHT_TO_G[u]) return { dim: "wt", v: qty * WEIGHT_TO_G[u] };
+  return { dim: "count:" + u, v: qty };
+}
+export function subtractPantry(list, pantry = []) {
+  const need = [], have = [];
+  list.forEach(item => {
+    const stock = pantry.filter(p => p && p.name && normalizeIngredient(p.name).id === item.canon.id);
+    if (!stock.length) { need.push(item); return; }
+    const want = toBase(item.qty, item.unit);
+    let remaining = want.v;
+    let comparable = false;
+    stock.forEach(p => {
+      const b = toBase(p.qty || 0, p.unit);
+      if (b.dim === want.dim) { remaining -= b.v; comparable = true; }
+    });
+    if (!comparable) { need.push({ ...item, pantryNote: stock.map(p => `${smartNumber(p.qty || 0)} ${p.unit || ""}`.trim()).join(", ") }); return; }
+    if (remaining <= 0.0001) { have.push(item); return; }
+    const ratio = remaining / want.v;
+    const qty = item.qty * ratio;
+    need.push({ ...item, qty, display: formatQuantity(qty, item.unit), partial: true });
+  });
+  return { need, have };
+}
+
 // Plan re-check on goal/allergen change (P0 #3)
 export function checkConflicts(plan, profile) {
   const conflicts = [];
@@ -196,10 +321,10 @@ export function checkConflicts(plan, profile) {
     ["breakfast", "lunch", "dinner"].forEach(slot => {
       const entry = day[slot];
       if (!entry || entry.status === "eaten" || entry.status === "skipped") return;
-      const meal = MEALS.find(m => m.id === entry.mealId);
+      const meal = findMeal(entry.mealId);
       if (!meal) return;
-      const isKetoConflict = profile.goal === "keto" && !meal.keto;
-      const allergenConflict = profile.allergens.some(a => meal.allergens?.includes(a));
+      const isKetoConflict = profile.goal === "keto" && meal.keto === false;
+      const allergenConflict = (profile.allergens || []).some(a => meal.allergens?.includes(a));
       if (isKetoConflict || allergenConflict) {
         conflicts.push({ date, slot, mealId: meal.id, name: meal.name, reasons: [isKetoConflict ? "keto" : null, allergenConflict ? "allergen" : null].filter(Boolean) });
       }
@@ -213,6 +338,60 @@ export let state = loadState();
 export function getAllMeals() {
   return [...MEALS, ...(state.customMeals || [])];
 }
+export function findMeal(id) {
+  return MEALS.find(m => m.id === id) || (state.customMeals || []).find(m => m.id === id);
+}
+export function ensureDay(date) {
+  if (!state.days[date]) state.days[date] = { breakfast: null, lunch: null, dinner: null };
+  return state.days[date];
+}
+export function setSlot(date, slot, mealId) {
+  const day = ensureDay(date);
+  day[slot] = mealId ? { mealId, status: "planned" } : null;
+  saveState();
+}
+// Swap the contents of two slots (either may be empty)
+export function swapSlots(a, b) {
+  if (a.date === b.date && a.slot === b.slot) return false;
+  const da = ensureDay(a.date), db = ensureDay(b.date);
+  const tmp = da[a.slot] || null;
+  da[a.slot] = db[b.slot] || null;
+  db[b.slot] = tmp;
+  saveState();
+  return true;
+}
+export function isFavorite(id) {
+  return (state.favorites || []).includes(id);
+}
+export function toggleFavorite(id) {
+  state.favorites = state.favorites || [];
+  if (state.favorites.includes(id)) state.favorites = state.favorites.filter(f => f !== id);
+  else state.favorites.push(id);
+  saveState();
+  return state.favorites.includes(id);
+}
+export function updateCustomMeal(id, patch) {
+  const m = (state.customMeals || []).find(x => x.id === id);
+  if (!m) return null;
+  Object.assign(m, patch);
+  saveState();
+  return m;
+}
+// Returns { meal, index } so the caller can offer Undo
+export function deleteCustomMeal(id) {
+  const index = (state.customMeals || []).findIndex(x => x.id === id);
+  if (index < 0) return null;
+  const [meal] = state.customMeals.splice(index, 1);
+  const wasFav = isFavorite(id);
+  state.favorites = (state.favorites || []).filter(f => f !== id);
+  saveState();
+  return { meal, index, wasFav };
+}
+export function restoreCustomMeal({ meal, index, wasFav }) {
+  state.customMeals.splice(Math.min(index, state.customMeals.length), 0, meal);
+  if (wasFav && !isFavorite(meal.id)) state.favorites.push(meal.id);
+  saveState();
+}
 
 
 
@@ -221,8 +400,7 @@ function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed.schemaVersion === SCHEMA_VERSION) return parsed;
-      // Migration stub for P3
+      if (parsed && (!parsed.schemaVersion || parsed.schemaVersion <= SCHEMA_VERSION)) return migrateState(parsed);
     }
   } catch (e) {}
   // Empty first-run state (P2 #12)
@@ -251,7 +429,10 @@ function loadState() {
     customMeals: [],
     pantry: [], // P1 #6: { id, name, qty, unit, location, expiry? }
     prices: {}, // editable prices
-    manualItems: [] // free-text grocery additions
+    manualItems: [], // free-text grocery additions
+    favorites: [],
+    shopChecked: {},
+    ui: { plannerView: "week" }
   };
 }
 
@@ -272,7 +453,7 @@ export function validateRecipeForm(formData) {
 // Pantry helpers (P1 foundation)
 export function addToPantry(item) {
   const entry = {
-    id: Date.now().toString(),
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
     ...item,
     added: new Date().toISOString(),
     expiry: item.expiry || null // ISO date string optional
@@ -297,7 +478,7 @@ export function suggestUseItUp() {
 }
 export function deductFromPantry(ingredientName, qty) {
   const canon = normalizeIngredient(ingredientName);
-  const item = state.pantry.find(p => normalizeIngredient(p.name).id === canon.id);
+  const item = state.pantry.find(p => p.name && normalizeIngredient(p.name).id === canon.id);
   if (item) {
     item.qty = Math.max(0, (item.qty || 0) - qty);
     if (item.qty <= 0) state.pantry = state.pantry.filter(p => p.id !== item.id);
@@ -306,8 +487,8 @@ export function deductFromPantry(ingredientName, qty) {
 }
 
 export function addCustomMeal(meal) {
-  const id = "c-" + Date.now();
-  const full = { id, ...meal, custom: true, centsPerServing: meal.centsPerServing || 200 };
+  const id = "c-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  const full = { id, source: "custom", ...meal, custom: true, centsPerServing: meal.centsPerServing || 200 };
   state.customMeals.push(full);
   saveState();
   return full;
@@ -316,10 +497,10 @@ export function addCustomMeal(meal) {
 export function markEatenAndDeduct(date, slot) {
   const day = state.days[date];
   if (!day || !day[slot] || day[slot].status === 'eaten') return false;
-  const meal = getAllMeals().find(m => m.id === day[slot].mealId);
+  const meal = findMeal(day[slot].mealId);
   if (!meal) return false;
-  // Deduct ingredients scaled to household
-  const scale = (state.profile.householdSize || 1) / (meal.servings || 1);
+  // Deduct ingredients scaled to the servings planned for this meal (or household size)
+  const scale = (day[slot].servings || getHouseholdSize(state.profile)) / (meal.servings || 1);
   (meal.ingredients || []).forEach(ing => {
     deductFromPantry(ing.name, (ing.qty || 1) * scale);
   });
@@ -333,7 +514,7 @@ export function copyDay(fromDate, toDate) {
   state.days[toDate] = JSON.parse(JSON.stringify(state.days[fromDate]));
   // Reset statuses for the copy
   ['breakfast', 'lunch', 'dinner'].forEach(s => {
-    if (state.days[toDate][s]) state.days[toDate][s].status = 'planned';
+    if (state.days[toDate][s]) { state.days[toDate][s].status = 'planned'; delete state.days[toDate][s].leftover; }
   });
   saveState();
   return true;
@@ -348,7 +529,8 @@ export function pushUndo(action) {
   if (!state._undo) state._undo = [];
   // Store a snapshot of affected days
   const snapshot = JSON.parse(JSON.stringify(state.days));
-  state._undo.push({ snapshot, label: action.label || 'change' });
+  const pantry = JSON.parse(JSON.stringify(state.pantry || []));
+  state._undo.push({ snapshot, pantry, label: action.label || 'change' });
   if (state._undo.length > 15) state._undo.shift();
   saveState();
 }
@@ -357,28 +539,23 @@ export function popUndo() {
   if (!state._undo || !state._undo.length) return false;
   const last = state._undo.pop();
   if (last.snapshot) state.days = last.snapshot;
+  if (last.pantry) state.pantry = last.pantry;
   saveState();
   return true;
 }
 
 export function exportData() {
-  return JSON.stringify({ schemaVersion: SCHEMA_VERSION, ...state }, null, 2);
+  const { _undo, ...rest } = state;
+  return JSON.stringify({ ...rest, schemaVersion: SCHEMA_VERSION }, null, 2);
 }
 
 export function importData(json) {
   try {
     const data = JSON.parse(json);
-    if (data.schemaVersion && data.schemaVersion <= SCHEMA_VERSION) {
+    if (data && typeof data === 'object' && (!data.schemaVersion || data.schemaVersion <= SCHEMA_VERSION) && (data.days || data.profile || data.customMeals)) {
       // Simple migration: ensure required keys
-      state = {
-        schemaVersion: SCHEMA_VERSION,
-        profile: data.profile || state.profile,
-        days: data.days || {},
-        customMeals: data.customMeals || [],
-        pantry: data.pantry || [],
-        prices: data.prices || {},
-        manualItems: data.manualItems || []
-      };
+      const { _undo, ...rest } = data;
+      state = migrateState({ ...rest, profile: data.profile || state.profile });
       saveState();
       return true;
     }
@@ -395,12 +572,10 @@ export function resetData() {
 export function planLeftover(date, slot) {
   const day = state.days[date];
   if (!day || !day[slot]) return false;
-  // Parse as local date to avoid timezone shift
-  const [y, m, d] = date.split('-').map(Number);
-  const tomorrow = new Date(y, m - 1, d + 1);
-  const tomorrowKey = tomorrow.toISOString().slice(0, 10);
+  const tomorrowKey = addDays(date, 1);
   if (!state.days[tomorrowKey]) state.days[tomorrowKey] = { breakfast: null, lunch: null, dinner: null };
   state.days[tomorrowKey][slot] = { ...day[slot], status: "planned", leftover: true };
   saveState();
   return true;
 }
+export { formatQuantity, smartNumber };

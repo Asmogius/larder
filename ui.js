@@ -1,292 +1,945 @@
-/* Larder Improved — UI layer (iteration 3)
-   Added validated recipe form UI, Shop pantry integration, improved Week skeleton.
-   Accessible focus, labels, role=alert.
+/* Larder — UI layer (iteration 4)
+   Routes: #planner (week/month calendar + today summary), #recipes, #recipe/<id>,
+   #shop (live from visible planner week), #pantry, #review, #settings ("More").
+   Old routes (#today, #week, #meals) redirect.
 */
-import { state, saveState, MEALS, aggregateGrocery, computeCost, checkConflicts, validateRecipeForm, addToPantry, addCustomMeal, getAllMeals, getExpiringSoon, suggestUseItUp, markEatenAndDeduct, planLeftover, exportData, importData, resetData, copyDay, pushUndo, popUndo, computeDailyNutrition, getTargets, getHouseholdSize } from './app.js';
-import { matchIngredient, searchIngredients, estimateFromDb } from './ingredients-db.js';
-import { normalizeIngredient } from './data.js';
+import {
+  state, saveState, aggregateGrocery, computeCost, checkConflicts, validateRecipeForm, addToPantry, addCustomMeal,
+  getAllMeals, findMeal, ensureDay, setSlot, swapSlots, getExpiringSoon, suggestUseItUp, markEatenAndDeduct, planLeftover,
+  exportData, importData, resetData, copyDay, pushUndo, popUndo, computeDailyNutrition, getTargets, getHouseholdSize,
+  dateKey, parseDateKey, addDays, weekStartOf, weekDays, SLOTS, subtractPantry, getRecipeSource, isFavorite, toggleFavorite,
+  updateCustomMeal, deleteCustomMeal, restoreCustomMeal, parseIngredientLine, smartNumber, formatQuantity
+} from './app.js';
+import { searchIngredients, estimateFromDb } from './ingredients-db.js';
+import { normalizeIngredient, computeNutritionFromIngredients } from './data.js';
 
-function showUndoToast(message) {
+/* ---------- helpers ---------- */
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+const cap = s => s ? s[0].toUpperCase() + s.slice(1) : '';
+function getTodayKey() { return dateKey(new Date()); }
+function fmtDay(key, opts = { weekday: 'short', month: 'short', day: 'numeric' }) {
+  return parseDateKey(key).toLocaleDateString('en-US', opts);
+}
+function mealName(entry) {
+  if (!entry) return '';
+  return findMeal(entry.mealId)?.name || entry.custom?.name || 'Missing recipe';
+}
+const SOURCE_LABEL = { builtin: 'Built-in', custom: 'Custom', imported: 'Imported' };
+function allergenHits(meal) {
+  return (state.profile.allergens || []).filter(a => (meal.allergens || []).includes(a));
+}
+function mealNutrition(meal) {
+  const nut = meal.protein != null ? meal : computeNutritionFromIngredients(meal.ingredients || [], meal.servings || 1);
+  const calories = nut.calories || Math.round((nut.protein || 0) * 4 + (nut.carbs || 0) * 4 + (nut.fat || 0) * 9);
+  return { calories, protein: nut.protein || 0, carbs: nut.carbs || 0, fat: nut.fat || 0, fiber: nut.fiber || 0 };
+}
+
+/* ---------- toast (fixed: inline display:flex used to override [hidden], so it never went away) ---------- */
+let toastTimer = null;
+function hideToast() {
+  clearTimeout(toastTimer);
+  toastTimer = null;
+  const toast = document.getElementById('undo-toast');
+  if (toast) { toast.classList.remove('show'); toast.setAttribute('aria-hidden', 'true'); }
+}
+/** showUndoToast(message, onUndo?) — onUndo omitted => plain notice with no Undo button */
+function showUndoToast(message, onUndo) {
   let toast = document.getElementById('undo-toast');
   if (!toast) {
     toast = document.createElement('div');
     toast.id = 'undo-toast';
-    toast.style.cssText = 'position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#1a1a1a;color:#fff;padding:0.75rem 1rem;border-radius:8px;z-index:2000;display:flex;gap:1rem;align-items:center;';
+    toast.className = 'toast';
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
     document.body.appendChild(toast);
   }
-  toast.innerHTML = `<span>${message}</span><button id="undo-btn" style="background:#fff;color:#1a1a1a;">Undo</button>`;
-  toast.hidden = false;
-  document.getElementById('undo-btn').onclick = () => {
-    if (popUndo()) {
-      toast.hidden = true;
-      renderPage(document.querySelector('.page:not([hidden])')?.id || 'today');
-    }
-  };
-  setTimeout(() => { toast.hidden = true; }, 5000);
+  clearTimeout(toastTimer);
+  toast.innerHTML = `<span class="toast-msg"></span>${onUndo ? '<button type="button" class="toast-undo">Undo</button>' : ''}`;
+  toast.querySelector('.toast-msg').textContent = message;
+  toast.querySelector('.toast-undo')?.addEventListener('click', () => {
+    hideToast();
+    onUndo();
+  });
+  toast.removeAttribute('aria-hidden');
+  // force reflow so re-showing restarts the transition cleanly
+  void toast.offsetWidth;
+  toast.classList.add('show');
+  toastTimer = setTimeout(hideToast, onUndo ? 5000 : 3500);
+}
+// Undo for plan (days + pantry) changes recorded with pushUndo
+function undoPlanChange() {
+  if (popUndo()) rerender();
+}
+function planChange(label, mutate, message) {
+  pushUndo({ label });
+  const ok = mutate();
+  if (ok === false) { popUndo(); return false; }
+  saveState();
+  showUndoToast(message, undoPlanChange);
+  rerender();
+  return true;
 }
 
-function showPage(id) {
-  document.querySelectorAll('.page').forEach(p => p.hidden = true);
-  const page = document.getElementById(id);
-  if (page) {
-    page.hidden = false;
-    page.focus();
-  }
-  document.querySelectorAll('nav a').forEach(a => {
-    const href = a.getAttribute('href')?.slice(1);
-    const isCurrent = href === id || (id === 'meals' && a.dataset.tab === 'more') || (id === 'review' && a.dataset.tab === 'more');
-    if (isCurrent) a.setAttribute('aria-current', 'page');
+/* ---------- routing ---------- */
+const ROUTE_ALIASES = { today: 'planner', week: 'planner', meals: 'recipes', more: 'settings', book: 'recipes' };
+const PAGES = ['planner', 'recipes', 'shop', 'pantry', 'review', 'settings'];
+let currentPage = 'planner';
+let currentParam = null;
+
+function parseHash() {
+  let h = decodeURIComponent(location.hash.slice(1) || '');
+  let param = null;
+  if (h.startsWith('recipe/')) { param = h.slice(7); h = 'recipes'; }
+  const page = ROUTE_ALIASES[h] || (PAGES.includes(h) ? h : 'planner');
+  return { page, param, redirected: page !== h && !param };
+}
+function route() {
+  const { page, param, redirected } = parseHash();
+  if (redirected) history.replaceState(null, '', '#' + page);
+  const changed = page !== currentPage || param !== currentParam;
+  currentPage = page; currentParam = param;
+  closeSheet(true);
+  showPage(page, changed);
+  renderPage(page, param);
+  if (changed) window.scrollTo(0, 0);
+}
+function rerender() { renderPage(currentPage, currentParam); }
+
+function showPage(id, moveFocus) {
+  document.querySelectorAll('.page').forEach(p => p.hidden = p.id !== id);
+  document.querySelectorAll('nav a[data-page]').forEach(a => {
+    const pages = a.dataset.page.split(' ');
+    if (pages.includes(id)) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
+  if (moveFocus) document.getElementById(id)?.querySelector('h2')?.focus({ preventScroll: true });
 }
+window.addEventListener('hashchange', route);
 
-// Navigation
-document.querySelectorAll('nav a').forEach(a => {
-  a.addEventListener('click', e => {
-    e.preventDefault();
-    let target = a.getAttribute('href').slice(1);
-    if (target === 'settings' && a.closest('.bottom-tabs')) target = 'settings';
-    showPage(target);
-    renderPage(target);
-  });
-});
-
-
-function openMealSheet(slot, mealName, day, dateKey, allMeals) {
-  const sheet = document.getElementById('meal-sheet');
-  const backdrop = document.getElementById('sheet-backdrop');
-  const title = document.getElementById('sheet-title');
-  const actions = document.getElementById('sheet-actions');
-  title.textContent = mealName || slot;
-  const currentServings = day[slot]?.servings || '';
-  actions.innerHTML = `
-    <label>Servings for this meal <input id="sheet-servings" type="number" min="1" value="${currentServings}" placeholder="default" style="max-width:100px;"></label>
-    <button data-slot="${slot}" data-action="set-servings">Set servings</button>
-    <button data-slot="${slot}" data-action="cook">Cook</button>
-    <button data-slot="${slot}" data-action="ate">We ate this</button>
-    <button data-slot="${slot}" data-action="leftover">Leftover tomorrow</button>
-    <button data-slot="${slot}" data-action="clear">Clear</button>
-  `;
-  sheet.hidden = false;
-  backdrop.hidden = false;
-  actions.querySelectorAll('button').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const action = btn.dataset.action;
-      closeMealSheet();
-      if (action === 'set-servings') {
-        const s = Number(document.getElementById('sheet-servings')?.value);
-        if (s > 0) day[slot].servings = s;
-        else delete day[slot].servings;
-        saveState();
-        showUndoToast('Servings updated');
-        renderToday();
-      } else if (action === 'clear') {
-        day[slot] = null;
-        saveState();
-        renderToday();
-      } else if (action === 'ate') {
-        if (markEatenAndDeduct(dateKey, slot)) showUndoToast('Marked eaten');
-        renderToday();
-      } else if (action === 'cook') {
-        const meal = allMeals.find(m => m.id === day[slot]?.mealId);
-        if (meal) openCookMode(meal);
-      } else if (action === 'leftover') {
-        const tomorrow = new Date(dateKey);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const tomKey = tomorrow.toISOString().slice(0, 10);
-        if (planLeftover(dateKey, slot)) showUndoToast('Leftover planned');
-        renderToday();
-      }
-    });
-  });
-}
-function closeMealSheet() {
-  document.getElementById('meal-sheet').hidden = true;
-  document.getElementById('sheet-backdrop').hidden = true;
-}
-document.getElementById('sheet-close')?.addEventListener('click', closeMealSheet);
-document.getElementById('sheet-backdrop')?.addEventListener('click', closeMealSheet);
-
-function renderPage(page) {
-  if (page === 'today') renderToday();
+function renderPage(page, param) {
+  if (page === 'planner') renderPlanner();
+  if (page === 'recipes') param ? renderRecipeDetail(param) : renderRecipes();
   if (page === 'shop') renderShop();
   if (page === 'settings') renderSettings();
-  if (page === 'meals') renderMeals();
-  if (page === 'week') renderWeek();
   if (page === 'pantry') renderPantry();
   if (page === 'review') renderReview();
 }
 
-function getTodayKey() {
-  return new Date().toISOString().slice(0, 10);
+/* ---------- bottom sheet ---------- */
+let sheetReturnFocus = null;
+function openSheet(title, html, wire) {
+  const sheet = document.getElementById('meal-sheet');
+  const backdrop = document.getElementById('sheet-backdrop');
+  if (sheet.hidden) sheetReturnFocus = document.activeElement;
+  document.getElementById('sheet-title').textContent = title;
+  const actions = document.getElementById('sheet-actions');
+  actions.innerHTML = html;
+  sheet.hidden = false;
+  backdrop.hidden = false;
+  document.body.classList.add('sheet-open');
+  wire?.(actions);
+  (actions.querySelector('[autofocus]') || actions.querySelector('button, input, select'))?.focus();
+}
+function closeSheet(silent) {
+  const sheet = document.getElementById('meal-sheet');
+  if (!sheet || sheet.hidden) return;
+  sheet.hidden = true;
+  document.getElementById('sheet-backdrop').hidden = true;
+  document.body.classList.remove('sheet-open');
+  if (!silent && sheetReturnFocus && document.contains(sheetReturnFocus)) sheetReturnFocus.focus();
+  sheetReturnFocus = null;
+}
+document.getElementById('sheet-close')?.addEventListener('click', () => closeSheet());
+document.getElementById('sheet-backdrop')?.addEventListener('click', () => closeSheet());
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !document.getElementById('meal-sheet').hidden) closeSheet();
+});
+
+/* ---------- planner ---------- */
+let plannerWeekStart = weekStartOf(getTodayKey());
+let monthCursor = getTodayKey().slice(0, 8) + '01';
+let monthSelected = null;
+let swapSource = null; // { date, slot }
+const isTouch = () => window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+
+function plannerView() { return state.ui?.plannerView === 'month' ? 'month' : 'week'; }
+function setPlannerView(v) {
+  state.ui = state.ui || {};
+  state.ui.plannerView = v;
+  saveState();
+}
+function weekLabel(start) {
+  const end = addDays(start, 6);
+  return `${fmtDay(start, { month: 'short', day: 'numeric' })} – ${fmtDay(end, { month: 'short', day: 'numeric', year: 'numeric' })}`;
 }
 
-function ensureDay(date) {
-  if (!state.days[date]) state.days[date] = { breakfast: null, lunch: null, dinner: null };
-  return state.days[date];
+function slotHtml(date, slot, today) {
+  const entry = state.days[date]?.[slot];
+  const has = !!entry;
+  const status = entry?.status;
+  const cls = ['meal-slot', has ? 'filled' : '', status === 'eaten' ? 'eaten' : '', status === 'skipped' ? 'skipped' : '',
+    swapSource && swapSource.date === date && swapSource.slot === slot ? 'selected' : '',
+    swapSource && !(swapSource.date === date && swapSource.slot === slot) ? 'drop-target' : ''].filter(Boolean).join(' ');
+  const name = has ? escapeHtml(mealName(entry)) : 'Add a meal';
+  const extra = [entry?.leftover ? 'leftover' : '', status === 'eaten' ? 'eaten' : '', status === 'skipped' ? 'skipped' : '', entry?.servings ? `${entry.servings} serv.` : ''].filter(Boolean).join(' · ');
+  return `<div class="${cls}" role="button" tabindex="0" draggable="${has && !isTouch()}" data-date="${date}" data-slot="${slot}"
+      aria-label="${cap(slot)}, ${fmtDay(date, { weekday: 'long', month: 'long', day: 'numeric' })}: ${has ? name : 'empty'}${extra ? ', ' + extra : ''}">
+    <span class="slot-label">${slot}</span>
+    <span class="slot-name${has ? '' : ' slot-empty'}">${name}${extra ? ` <small class="slot-extra">· ${extra}</small>` : ''}</span>
+  </div>`;
 }
 
-function renderToday() {
-  const el = document.getElementById('today-content');
+function todaySummaryHtml() {
   const today = getTodayKey();
-  const day = ensureDay(today);
-  const planned = [day.breakfast, day.lunch, day.dinner].filter(Boolean);
-  const allMeals = getAllMeals();
-  const nut = computeDailyNutrition(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), getHouseholdSize(state.profile), planned);
+  const day = state.days[today] || {};
+  const entries = SLOTS.map(s => day[s]).filter(e => e && e.status !== 'skipped');
+  const meals = entries.map(e => findMeal(e.mealId));
+  const pairs = entries.map((e, i) => [e, meals[i]]).filter(([, m]) => m);
+  const nut = computeDailyNutrition(pairs.map(p => p[1]), getHouseholdSize(state.profile), pairs.map(p => p[0]));
   const targets = getTargets(state.profile);
-  const cost = computeCost(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), getHouseholdSize(state.profile), state.prices || {});
+  const cost = computeCost(pairs.map(p => p[1]), getHouseholdSize(state.profile), state.prices || {});
+  const bar = (label, v, t, unit = '') => {
+    const pct = t ? Math.min(100, Math.round((v / t) * 100)) : 0;
+    return `<div class="macro"><div class="macro-top"><span>${label}</span><span><strong>${v}${unit}</strong> / ${t}${unit}</span></div>
+      <div class="meter" role="meter" aria-label="${label}" aria-valuemin="0" aria-valuemax="${t}" aria-valuenow="${v}"><span style="width:${pct}%"></span></div></div>`;
+  };
+  const rows = SLOTS.map(slot => {
+    const e = day[slot];
+    if (!e) return `<li class="today-row"><span class="slot-label">${slot}</span><span class="slot-name slot-empty">Open</span>
+      <button type="button" class="secondary small" data-today-add="${slot}">Add</button></li>`;
+    const st = e.status === 'eaten' ? '<span class="badge ok">Eaten</span>' : e.status === 'skipped' ? '<span class="badge muted">Skipped</span>' : '';
+    return `<li class="today-row"><span class="slot-label">${slot}</span>
+      <button type="button" class="linkish slot-name" data-today-open="${slot}">${escapeHtml(mealName(e))}</button> ${st}
+      <span class="today-actions">${e.status === 'planned' || !e.status ? `<button type="button" class="small" data-today-ate="${slot}">We ate this</button>
+      <button type="button" class="secondary small" data-today-skip="${slot}">Skip</button>` : `<button type="button" class="secondary small" data-today-reset="${slot}">Undo status</button>`}</span></li>`;
+  }).join('');
+  return `<section class="card today-card" aria-labelledby="today-h">
+    <h3 id="today-h">Today · ${fmtDay(today, { weekday: 'long', month: 'long', day: 'numeric' })}</h3>
+    <p class="muted">${cap(state.profile.goal)} · ${getHouseholdSize(state.profile)} ${getHouseholdSize(state.profile) === 1 ? 'person' : 'people'}</p>
+    <ul class="today-list">${rows}</ul>
+    <div class="macros">${bar('Calories', nut.calories, targets.calories)}${bar('Protein', nut.protein, targets.protein, 'g')}${bar('Carbs', nut.carbs, targets.carbs, 'g')}${bar('Fat', nut.fat, targets.fat, 'g')}</div>
+    <p class="muted">Cost $${cost.total.toFixed(2)} ${cost.label}</p>
+    ${SLOTS.some(s => !day[s]) ? '<button type="button" id="suggest-btn" class="secondary">Suggest open meals</button>' : ''}
+  </section>`;
+}
+
+function renderPlanner() {
+  const el = document.getElementById('planner-content');
+  const today = getTodayKey();
+  const view = plannerView();
+  let body = '';
+  let rangeLabel = '';
+  if (view === 'week') {
+    rangeLabel = weekLabel(plannerWeekStart);
+    body = `<div id="week-days">${weekDays(plannerWeekStart).map(key => `
+      <div class="week-day${key === today ? ' is-today' : ''}" data-date="${key}">
+        <div class="week-day-header">${fmtDay(key)}${key === today ? ' <span class="badge">Today</span>' : ''}</div>
+        ${SLOTS.map(s => slotHtml(key, s, today)).join('')}
+        <div class="week-actions"><button type="button" class="secondary" data-copy="${key}" aria-label="Copy ${fmtDay(key)} to the next day">Copy to next day</button></div>
+      </div>`).join('')}</div>`;
+  } else {
+    const first = parseDateKey(monthCursor);
+    rangeLabel = first.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const gridStart = weekStartOf(monthCursor);
+    const month = first.getMonth();
+    const cells = [];
+    const offset = (first.getDay() + 6) % 7;
+    const daysInMonth = new Date(first.getFullYear(), month + 1, 0).getDate();
+    const total = Math.ceil((offset + daysInMonth) / 7) * 7;
+    for (let i = 0; i < total; i++) {
+      const key = addDays(gridStart, i);
+      const d = parseDateKey(key);
+      const day = state.days[key] || {};
+      const lines = SLOTS.filter(s => day[s]).map(s => `<span class="mini ${day[s].status || ''}"><b>${s[0].toUpperCase()}</b> ${escapeHtml(mealName(day[s]))}</span>`).join('');
+      const count = SLOTS.filter(s => day[s]).length;
+      cells.push(`<button type="button" class="month-day${d.getMonth() !== month ? ' other' : ''}${key === today ? ' is-today' : ''}${key === monthSelected ? ' selected-day' : ''}" data-day="${key}"
+        aria-label="${fmtDay(key, { weekday: 'long', month: 'long', day: 'numeric' })}, ${count} of 3 meals planned" aria-pressed="${key === monthSelected}">
+        <span class="month-num">${d.getDate()}</span>
+        <span class="dots" aria-hidden="true">${SLOTS.map(s => `<i class="${day[s] ? 'on' : ''}"></i>`).join('')}</span>
+        <span class="mini-list">${lines}</span></button>`);
+    }
+    const sel = monthSelected;
+    body = `<div class="month-grid" role="grid" aria-label="${rangeLabel}">
+        ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => `<div class="month-dow" aria-hidden="true">${d}</div>`).join('')}
+        ${cells.join('')}</div>
+      ${sel ? `<div class="week-day expanded-day${sel === today ? ' is-today' : ''}" data-date="${sel}" id="expanded-day">
+          <div class="week-day-header">${fmtDay(sel, { weekday: 'long', month: 'long', day: 'numeric' })}</div>
+          ${SLOTS.map(s => slotHtml(sel, s, today)).join('')}
+          <div class="week-actions"><button type="button" class="secondary" id="open-week">Open this week</button></div>
+        </div>` : '<p class="muted">Tap a day to see and edit its meals.</p>'}`;
+  }
   el.innerHTML = `
-    <p>${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${state.profile.goal} · ${getHouseholdSize(state.profile)} person</p>
-    <div class="card">
-      <h3>Breakfast ${day.breakfast ? '' : 'OPEN'}</h3>
-      ${day.breakfast ? `<p class="meal-line" data-slot="breakfast">${allMeals.find(m => m.id === day.breakfast.mealId)?.name || 'Custom'}</p><div class="desktop-actions"><button data-slot="breakfast" data-action="clear">Clear</button> <button data-slot="breakfast" data-action="ate">We ate this</button> <button data-slot="breakfast" data-action="cook">Cook</button> <button data-slot="breakfast" data-action="leftover">Leftover tomorrow</button></div>` : '<button data-slot="breakfast" data-action="add">Add breakfast</button>'}
+    ${todaySummaryHtml()}
+    <div class="planner-toolbar">
+      <div class="segmented" role="group" aria-label="Calendar view">
+        <button type="button" data-view="week" aria-pressed="${view === 'week'}">Week</button>
+        <button type="button" data-view="month" aria-pressed="${view === 'month'}">Month</button>
+      </div>
+      <div class="range-nav">
+        <button type="button" class="secondary icon" id="prev-range" aria-label="Previous ${view}">‹</button>
+        <span class="range-label" aria-live="polite">${rangeLabel}</span>
+        <button type="button" class="secondary icon" id="next-range" aria-label="Next ${view}">›</button>
+        <button type="button" class="secondary small" id="today-range">Today</button>
+      </div>
     </div>
-    <div class="card">
-      <h3>Lunch ${day.lunch ? '' : 'OPEN'}</h3>
-      ${day.lunch ? `<p class="meal-line" data-slot="lunch">${allMeals.find(m => m.id === day.lunch.mealId)?.name || 'Custom'}</p><div class="desktop-actions"><button data-slot="lunch" data-action="clear">Clear</button> <button data-slot="lunch" data-action="ate">We ate this</button> <button data-slot="lunch" data-action="cook">Cook</button> <button data-slot="lunch" data-action="leftover">Leftover tomorrow</button></div>` : '<button data-slot="lunch" data-action="add">Add lunch</button>'}
-    </div>
-    <div class="card">
-      <h3>Dinner ${day.dinner ? '' : 'OPEN'}</h3>
-      ${day.dinner ? `<p class="meal-line" data-slot="dinner">${allMeals.find(m => m.id === day.dinner.mealId)?.name || 'Custom'}</p><div class="desktop-actions"><button data-slot="dinner" data-action="clear">Clear</button> <button data-slot="dinner" data-action="ate">We ate this</button> <button data-slot="dinner" data-action="cook">Cook</button> <button data-slot="dinner" data-action="leftover">Leftover tomorrow</button></div>` : '<button data-slot="dinner" data-action="add">Add dinner</button>'}
-    </div>
-    <aside class="card">
-      <h3>If this day stands</h3>
-      <p>Calories ${nut.calories} / ${targets.calories} · Protein ${nut.protein}g / ${targets.protein}g · Carbs ${nut.carbs}g / ${targets.carbs}g · Fat ${nut.fat}g / ${targets.fat}g</p>
-      <p>Cost ${cost.total.toFixed(2)} ${cost.label}</p>
-      <button id="suggest-btn">Suggest open meals</button>${!planned.length ? '<div class="empty"><strong>Nothing planned yet</strong>Use Suggest or add a meal above.</div>' : ''}
-    </aside>
-  `;
-  // Mobile: tap meal name opens sheet
-  el.querySelectorAll('.meal-line').forEach(line => {
-    line.addEventListener('click', () => {
-      const slot = line.dataset.slot;
-      const meal = allMeals.find(m => m.id === day[slot]?.mealId);
-      openMealSheet(slot, meal?.name || slot, day, today, allMeals);
+    ${swapSource ? `<div class="move-hint" role="status">Tap the slot to swap with <strong>${escapeHtml(mealName(state.days[swapSource.date]?.[swapSource.slot]) || 'empty ' + swapSource.slot)}</strong>. <button type="button" id="cancel-move" class="secondary small">Cancel</button></div>`
+      : `<p class="muted hint">Tap a slot to choose, swap or remove a meal.${isTouch() ? '' : ' You can also drag meals between slots.'}</p>`}
+    ${body}`;
+  wirePlanner(el);
+}
+
+function wirePlanner(el) {
+  const today = getTodayKey();
+  // Today summary
+  el.querySelectorAll('[data-today-add]').forEach(b => b.addEventListener('click', () => openRecipePicker(today, b.dataset.todayAdd)));
+  el.querySelectorAll('[data-today-open]').forEach(b => b.addEventListener('click', () => openSlotSheet(today, b.dataset.todayOpen)));
+  el.querySelectorAll('[data-today-ate]').forEach(b => b.addEventListener('click', () =>
+    planChange('ate', () => markEatenAndDeduct(today, b.dataset.todayAte), 'Marked eaten and deducted from pantry')));
+  el.querySelectorAll('[data-today-skip]').forEach(b => b.addEventListener('click', () =>
+    planChange('skip', () => { state.days[today][b.dataset.todaySkip].status = 'skipped'; }, 'Meal skipped')));
+  el.querySelectorAll('[data-today-reset]').forEach(b => b.addEventListener('click', () =>
+    planChange('reset', () => { state.days[today][b.dataset.todayReset].status = 'planned'; }, 'Status cleared')));
+  el.querySelector('#suggest-btn')?.addEventListener('click', () => planChange('suggest', () => {
+    const day = ensureDay(today);
+    const pantryIds = new Set((state.pantry || []).filter(p => p.name).map(p => normalizeIngredient(p.name).id));
+    const ok = m => !allergenHits(m).length && !(state.profile.goal === 'keto' && m.keto === false);
+    let filled = 0;
+    SLOTS.forEach(slot => {
+      if (day[slot]) return;
+      const all = getAllMeals();
+      const meal = all.find(m => m.slot === slot && ok(m) && m.ingredients?.some(i => i.name && pantryIds.has(normalizeIngredient(i.name).id)))
+        || all.find(m => m.slot === slot && ok(m));
+      if (meal) { day[slot] = { mealId: meal.id, status: 'planned' }; filled++; }
     });
+    return filled > 0;
+  }, 'Suggested meals added'));
+
+  // Toolbar
+  el.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => {
+    const v = b.dataset.view;
+    if (v === 'month') {
+      const inWeek = weekDays(plannerWeekStart).includes(today);
+      monthSelected = monthSelected && weekDays(plannerWeekStart).includes(monthSelected) ? monthSelected : (inWeek ? today : plannerWeekStart);
+      monthCursor = monthSelected.slice(0, 8) + '01';
+    }
+    setPlannerView(v);
+    renderPlanner();
+    el.querySelector(`[data-view="${v}"]`)?.focus();
+  }));
+  const shift = dir => {
+    if (plannerView() === 'week') plannerWeekStart = addDays(plannerWeekStart, 7 * dir);
+    else {
+      const d = parseDateKey(monthCursor);
+      d.setMonth(d.getMonth() + dir);
+      monthCursor = dateKey(d);
+      monthSelected = null;
+    }
+    renderPlanner();
+  };
+  el.querySelector('#prev-range')?.addEventListener('click', () => { shift(-1); el.querySelector('#prev-range')?.focus(); });
+  el.querySelector('#next-range')?.addEventListener('click', () => { shift(1); el.querySelector('#next-range')?.focus(); });
+  el.querySelector('#today-range')?.addEventListener('click', () => {
+    plannerWeekStart = weekStartOf(today);
+    monthCursor = today.slice(0, 8) + '01';
+    monthSelected = plannerView() === 'month' ? today : null;
+    renderPlanner();
   });
-  // Wire buttons
-  el.querySelectorAll('button[data-action]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const slot = btn.dataset.slot;
-      const action = btn.dataset.action;
-      if (action === 'set-servings') {
-        const s = Number(document.getElementById('sheet-servings')?.value);
-        if (s > 0) day[slot].servings = s;
-        else delete day[slot].servings;
-        saveState();
-        showUndoToast('Servings updated');
-        renderToday();
-      } else if (action === 'clear') {
-        day[slot] = null;
-        saveState();
-        renderToday();
-      } else if (action === 'ate') {
-        if (markEatenAndDeduct(today, slot)) {
-          showUndoToast('Marked eaten and deducted from pantry');
-        }
-        renderToday();
-      } else if (action === 'cook') {
-        const meal = allMeals.find(m => m.id === day[slot]?.mealId);
-        if (meal) openCookMode(meal);
-      } else if (action === 'leftover') {
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const tomKey = tomorrow.toISOString().slice(0, 10);
-        if (planLeftover(today, slot)) {
-          showUndoToast('Leftover planned for tomorrow');
-        }
-        renderToday();
-      } else if (action === 'add') {
-        const meal = allMeals.find(m => m.slot === slot && !state.profile.allergens.some(a => m.allergens?.includes(a)));
-        if (meal) {
-          day[slot] = { mealId: meal.id, status: 'planned' };
-          saveState();
-          renderToday();
-        }
-      }
-    });
+  el.querySelector('#cancel-move')?.addEventListener('click', () => { swapSource = null; renderPlanner(); });
+  el.querySelector('#open-week')?.addEventListener('click', () => {
+    plannerWeekStart = weekStartOf(monthSelected);
+    setPlannerView('week');
+    renderPlanner();
   });
-  document.getElementById('suggest-btn')?.addEventListener('click', () => {
-    const pantryIds = new Set((state.pantry || []).map(p => normalizeIngredient(p.name).id));
-    ['breakfast', 'lunch', 'dinner'].forEach(slot => {
-      if (!day[slot]) {
-        // Prefer meals that use pantry items
-        let meal = allMeals.find(m => m.slot === slot && !state.profile.allergens.some(a => m.allergens?.includes(a)) && m.ingredients?.some(ing => pantryIds.has(normalizeIngredient(ing.name).id)));
-        if (!meal) meal = allMeals.find(m => m.slot === slot && !state.profile.allergens.some(a => m.allergens?.includes(a)));
-        if (meal) day[slot] = { mealId: meal.id, status: 'planned' };
+
+  // Month cells
+  el.querySelectorAll('.month-day').forEach(b => b.addEventListener('click', () => {
+    monthSelected = b.dataset.day;
+    plannerWeekStart = weekStartOf(monthSelected); // keeps Shop in sync with what you're looking at
+    const d = parseDateKey(monthSelected);
+    if (d.getMonth() !== parseDateKey(monthCursor).getMonth()) monthCursor = monthSelected.slice(0, 8) + '01';
+    renderPlanner();
+    const exp = document.getElementById('expanded-day');
+    exp?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    exp?.querySelector('.meal-slot')?.focus({ preventScroll: true });
+  }));
+
+  // Slots: tap opens sheet, or completes a swap
+  el.querySelectorAll('.meal-slot').forEach(slotEl => {
+    const activate = () => {
+      const { date, slot } = slotEl.dataset;
+      if (swapSource) {
+        const from = swapSource;
+        swapSource = null;
+        if (from.date === date && from.slot === slot) { renderPlanner(); return; }
+        planChange('swap', () => swapSlots(from, { date, slot }), 'Meals swapped');
+        return;
       }
+      openSlotSheet(date, slot);
+    };
+    slotEl.addEventListener('click', activate);
+    slotEl.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); } });
+  });
+
+  // Desktop drag and drop (swap)
+  if (!isTouch()) {
+    el.querySelectorAll('.meal-slot[draggable="true"]').forEach(s => {
+      s.addEventListener('dragstart', e => {
+        s.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', JSON.stringify({ date: s.dataset.date, slot: s.dataset.slot }));
+      });
+      s.addEventListener('dragend', () => {
+        s.classList.remove('dragging');
+        el.querySelectorAll('.drop-target').forEach(n => n.classList.remove('drop-target'));
+      });
     });
-    saveState();
-    renderToday();
+    el.querySelectorAll('.meal-slot').forEach(t => {
+      t.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; t.classList.add('drop-target'); });
+      t.addEventListener('dragleave', () => t.classList.remove('drop-target'));
+      t.addEventListener('drop', e => {
+        e.preventDefault();
+        t.classList.remove('drop-target');
+        let data = {};
+        try { data = JSON.parse(e.dataTransfer.getData('text/plain') || '{}'); } catch {}
+        if (!data.date) return;
+        if (data.date === t.dataset.date && data.slot === t.dataset.slot) return;
+        planChange('move', () => swapSlots(data, { date: t.dataset.date, slot: t.dataset.slot }), 'Meal moved');
+      });
+    });
+  }
+
+  el.querySelectorAll('[data-copy]').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const from = btn.dataset.copy;
+    const day = state.days[from];
+    if (!day || !SLOTS.some(s => day[s])) { showUndoToast('Nothing to copy on that day'); return; }
+    planChange('copy', () => copyDay(from, addDays(from, 1)), `Copied to ${fmtDay(addDays(from, 1))}`);
+  }));
+}
+
+function openSlotSheet(date, slot) {
+  const entry = state.days[date]?.[slot];
+  const meal = entry ? findMeal(entry.mealId) : null;
+  const title = `${cap(slot)} · ${fmtDay(date)}`;
+  const html = entry ? `
+      <p class="sheet-meal">${escapeHtml(mealName(entry))}${entry.status && entry.status !== 'planned' ? ` <span class="badge">${entry.status}</span>` : ''}</p>
+      <button type="button" data-act="choose">Choose recipe</button>
+      <button type="button" data-act="swap">Swap with another slot</button>
+      ${meal ? '<button type="button" data-act="view" class="secondary">View recipe</button>' : ''}
+      ${meal ? '<button type="button" data-act="cook" class="secondary">Cook</button>' : ''}
+      ${entry.status !== 'eaten' ? '<button type="button" data-act="ate" class="secondary">We ate this</button>' : ''}
+      ${entry.status !== 'skipped' ? '<button type="button" data-act="skip" class="secondary">Skip</button>' : ''}
+      <button type="button" data-act="leftover" class="secondary">Leftover tomorrow</button>
+      <div class="inline-field"><label for="sheet-servings">Servings for this meal</label>
+        <input id="sheet-servings" type="number" min="1" inputmode="numeric" value="${entry.servings || ''}" placeholder="${getHouseholdSize(state.profile)} (household)">
+        <button type="button" data-act="servings" class="secondary">Set</button></div>
+      <button type="button" data-act="remove" class="danger">Remove</button>`
+    : `<p class="sheet-meal muted">Nothing planned.</p>
+      <button type="button" data-act="choose">Choose recipe</button>
+      <button type="button" data-act="swap" class="secondary">Swap with another slot</button>`;
+  openSheet(title, html, actions => {
+    actions.querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', () => {
+      const act = btn.dataset.act;
+      if (act === 'choose') return openRecipePicker(date, slot);
+      if (act === 'servings') {
+        const s = Number(actions.querySelector('#sheet-servings').value);
+        closeSheet();
+        return planChange('servings', () => { if (s > 0) entry.servings = s; else delete entry.servings; }, 'Servings updated');
+      }
+      closeSheet();
+      if (act === 'swap') {
+        swapSource = { date, slot };
+        if (currentPage !== 'planner') location.hash = '#planner'; else renderPlanner();
+        document.querySelector('.move-hint')?.scrollIntoView({ block: 'nearest' });
+      } else if (act === 'view') location.hash = '#recipe/' + encodeURIComponent(meal.id);
+      else if (act === 'cook') openCookMode(meal);
+      else if (act === 'ate') planChange('ate', () => markEatenAndDeduct(date, slot), 'Marked eaten and deducted from pantry');
+      else if (act === 'skip') planChange('skip', () => { entry.status = 'skipped'; }, 'Meal skipped');
+      else if (act === 'leftover') planChange('leftover', () => planLeftover(date, slot), `Leftover planned for ${fmtDay(addDays(date, 1))}`);
+      else if (act === 'remove') planChange('remove', () => { state.days[date][slot] = null; }, 'Meal removed');
+    }));
   });
 }
 
+function openRecipePicker(date, slot) {
+  const html = `
+    <label for="picker-q" class="sr-only">Search recipes</label>
+    <input id="picker-q" type="search" placeholder="Search name or ingredient" autocomplete="off" autofocus>
+    <label class="check"><input type="checkbox" id="picker-all"> Show all meal types</label>
+    <div id="picker-list" class="picker-list" role="list"></div>
+    <button type="button" class="secondary" id="picker-back">Back</button>`;
+  openSheet(`Choose ${slot} · ${fmtDay(date)}`, html, actions => {
+    const q = actions.querySelector('#picker-q');
+    const allBox = actions.querySelector('#picker-all');
+    const list = actions.querySelector('#picker-list');
+    const draw = () => {
+      const term = q.value.trim().toLowerCase();
+      const all = getAllMeals().filter(m => (allBox.checked || term || m.slot === slot) && recipeMatches(m, term));
+      all.sort((a, b) => (b.slot === slot) - (a.slot === slot) || isFavorite(b.id) - isFavorite(a.id) || a.name.localeCompare(b.name));
+      list.innerHTML = all.slice(0, 80).map(m => {
+        const warn = allergenHits(m);
+        return `<button type="button" role="listitem" class="picker-item" data-pick="${escapeHtml(m.id)}">
+          <span>${isFavorite(m.id) ? '★ ' : ''}${escapeHtml(m.name)}</span>
+          <small>${cap(m.slot)}${m.totalMin ? ` · ${m.totalMin} min` : ''} · ${SOURCE_LABEL[getRecipeSource(m)]}${warn.length ? ` · ⚠ ${escapeHtml(warn.join(', '))}` : ''}</small></button>`;
+      }).join('') || '<p class="empty"><strong>No recipes match</strong>Try another search.</p>';
+      list.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () => {
+        const m = findMeal(b.dataset.pick);
+        closeSheet();
+        planChange('choose', () => setSlot(date, slot, m.id), `${m.name} planned for ${slot}`);
+      }));
+    };
+    q.addEventListener('input', draw);
+    allBox.addEventListener('change', draw);
+    actions.querySelector('#picker-back').addEventListener('click', () => state.days[date]?.[slot] ? openSlotSheet(date, slot) : closeSheet());
+    draw();
+  });
+}
+
+/* ---------- shop (live from the visible planner week) ---------- */
+let shopIncludeEaten = false;
 function renderShop() {
   const el = document.getElementById('shop-content');
+  const days = weekDays(plannerWeekStart);
   const planned = [];
-  const today = new Date();
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() + i);
-    const key = d.toISOString().slice(0, 10);
-    const day = state.days[key];
-    if (day) {
-      ['breakfast', 'lunch', 'dinner'].forEach(slot => {
-        if (day[slot] && day[slot].mealId) planned.push(day[slot]);
-      });
-    }
-  }
-  const allMeals = getAllMeals();
-  const list = aggregateGrocery(planned, { excludeEaten: true });
-  const total = computeCost(planned.map(p => allMeals.find(m => m.id === p.mealId)).filter(Boolean), getHouseholdSize(state.profile));
+  days.forEach(key => SLOTS.forEach(slot => { const e = state.days[key]?.[slot]; if (e?.mealId) planned.push(e); }));
+  const active = planned.filter(p => p.status !== 'skipped' && (shopIncludeEaten || p.status !== 'eaten'));
+  const list = aggregateGrocery(planned, { excludeEaten: !shopIncludeEaten });
+  const { need, have } = subtractPantry(list, state.pantry || []);
+  const meals = active.map(p => findMeal(p.mealId)).filter(Boolean);
+  const total = computeCost(meals, getHouseholdSize(state.profile), state.prices || {});
+  state.shopChecked = state.shopChecked || {};
+  const checked = new Set(state.shopChecked[plannerWeekStart] || []);
+  const manual = state.manualItems || [];
+  let lastAisle = null;
+  const rows = need.map((item, idx) => {
+    const head = item.aisle !== lastAisle ? `<li class="aisle-head">${escapeHtml(cap(item.aisle || 'other'))}</li>` : '';
+    lastAisle = item.aisle;
+    const id = item.canon.id;
+    return `${head}<li class="shop-item${checked.has(id) ? ' done' : ''}">
+      <label class="check"><input type="checkbox" data-check="${escapeHtml(id)}" ${checked.has(id) ? 'checked' : ''}>
+        <span><strong>${escapeHtml(item.display)}</strong> ${escapeHtml(item.canon.name)}${item.partial ? ' <span class="badge muted">after pantry</span>' : ''}</span></label>
+      <small class="muted">${escapeHtml(item.expanded)}${item.pantryNote ? ` · have ${escapeHtml(item.pantryNote)} in pantry` : ''}</small>
+      <div class="shop-item-actions">
+        <button type="button" class="secondary small" data-add-pantry="${idx}">Add to pantry</button>
+        <label class="price"><span class="sr-only">Price for ${escapeHtml(item.canon.name)}</span>$<input type="number" inputmode="decimal" data-price="${escapeHtml(id)}" placeholder="est." step="0.01" min="0" value="${state.prices?.[id] != null ? (state.prices[id] / 100).toFixed(2) : ''}"></label>
+      </div></li>`;
+  }).join('');
   el.innerHTML = `
-    <p>Grocery list · ${total.total.toFixed(2)} ${total.label} · Next 7 days</p>
-    <ul style="list-style:none; padding:0;">
-      ${list.map((item, idx) => `<li class="card" style="margin-bottom:0.5rem;"><label><input type="checkbox" data-idx="${idx}"> ${item.display} ${item.canon.name}</label> <small style="color:var(--muted);">(${item.expanded})</small> <button data-add-pantry="${idx}" style="margin-left:0.5rem; font-size:0.8rem;">Add to pantry</button> <input type="number" data-price="${item.canon.id}" placeholder="price est." step="0.01" style="width:80px; margin-left:0.5rem;" value="${((state.prices || {})[item.canon.id] || 0) / 100 || ''}"></li>`).join('') || '<li class="empty"><strong>List is clear</strong>Plan some meals to see groceries here.</li>'}
-    </ul>
-    <button id="add-manual">Add manual item</button>
-    <button id="copy-list">Copy list</button>
-    <button id="share-list">Share</button>
-    <p>Date range: <select id="range"><option value="7">Next 7 days</option><option value="week">Rest of this week</option><option value="custom">Custom</option></select></p>
-    <label><input type="checkbox" id="include-eaten"> Include already eaten</label>
-    <p><small>Check off or use “Add to pantry” to track inventory (P1 foundation).</small></p>
+    <div class="planner-toolbar">
+      <div class="range-nav">
+        <button type="button" class="secondary icon" id="shop-prev" aria-label="Previous week">‹</button>
+        <span class="range-label">Week of ${weekLabel(plannerWeekStart)}</span>
+        <button type="button" class="secondary icon" id="shop-next" aria-label="Next week">›</button>
+      </div>
+    </div>
+    <p class="muted">Covers the planner week ${weekLabel(plannerWeekStart)} · ${active.length} meal${active.length === 1 ? '' : 's'} · $${total.total.toFixed(2)} ${total.label} Pantry items are subtracted automatically.</p>
+    ${planned.length ? '' : '<div class="empty"><strong>No meals planned this week</strong><a href="#planner">Open the planner</a> to add some — the list fills in automatically.</div>'}
+    ${need.length ? `<ul class="shop-list">${rows}</ul>` : planned.length ? '<div class="empty"><strong>List is clear</strong>Everything for this week is already in your pantry.</div>' : ''}
+    <div class="card">
+      <h3>Extra items</h3>
+      <ul class="shop-list">${manual.map((m, i) => `<li class="shop-item"><span>${escapeHtml(m.name)}</span> <button type="button" class="secondary small" data-del-manual="${i}" aria-label="Remove ${escapeHtml(m.name)}">Remove</button></li>`).join('') || '<li class="muted">None yet.</li>'}</ul>
+      <form id="manual-form" class="inline-field"><label for="manual-name" class="sr-only">Extra item</label>
+        <input id="manual-name" placeholder="e.g. paper towels" autocomplete="off"><button type="submit">Add</button></form>
+    </div>
+    ${have.length ? `<details class="card"><summary>Already in pantry (${have.length})</summary><ul>${have.map(i => `<li>${escapeHtml(i.display)} ${escapeHtml(i.canon.name)}</li>`).join('')}</ul></details>` : ''}
+    <div class="button-row">
+      <button type="button" id="copy-list">Copy list</button>
+      <button type="button" id="share-list" class="secondary">Share</button>
+    </div>
+    <label class="check"><input type="checkbox" id="include-eaten" ${shopIncludeEaten ? 'checked' : ''}> Include meals already eaten</label>
   `;
-  el.querySelectorAll('[data-add-pantry]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const item = list[Number(btn.dataset.addPantry)];
-      addToPantry({ name: item.canon.name, qty: item.qty, unit: item.unit, location: item.aisle });
-      showUndoToast('Added to pantry');
+  const textList = () => [...need.map(i => `${i.display} ${i.canon.name}`), ...manual.map(m => m.name)].join('\n');
+  el.querySelector('#shop-prev').addEventListener('click', () => { plannerWeekStart = addDays(plannerWeekStart, -7); renderShop(); });
+  el.querySelector('#shop-next').addEventListener('click', () => { plannerWeekStart = addDays(plannerWeekStart, 7); renderShop(); });
+  el.querySelectorAll('[data-check]').forEach(cb => cb.addEventListener('change', () => {
+    const set = new Set(state.shopChecked[plannerWeekStart] || []);
+    cb.checked ? set.add(cb.dataset.check) : set.delete(cb.dataset.check);
+    state.shopChecked[plannerWeekStart] = [...set];
+    saveState();
+    cb.closest('.shop-item')?.classList.toggle('done', cb.checked);
+  }));
+  el.querySelectorAll('[data-add-pantry]').forEach(btn => btn.addEventListener('click', () => {
+    const item = need[Number(btn.dataset.addPantry)];
+    const entry = addToPantry({ name: item.canon.name, qty: item.qty, unit: item.unit, location: item.aisle });
+    showUndoToast(`${item.canon.name} added to pantry`, () => {
+      state.pantry = state.pantry.filter(p => p.id !== entry.id); saveState(); rerender();
     });
+    renderShop();
+  }));
+  el.querySelectorAll('[data-price]').forEach(input => input.addEventListener('change', () => {
+    const val = parseFloat(input.value);
+    state.prices = state.prices || {};
+    if (input.value === '') delete state.prices[input.dataset.price];
+    else if (!isNaN(val) && val >= 0) state.prices[input.dataset.price] = Math.round(val * 100);
+    else return;
+    saveState();
+    renderShop();
+  }));
+  el.querySelectorAll('[data-del-manual]').forEach(b => b.addEventListener('click', () => {
+    const i = Number(b.dataset.delManual);
+    const [removed] = state.manualItems.splice(i, 1);
+    saveState();
+    renderShop();
+    showUndoToast(`Removed ${removed.name}`, () => { state.manualItems.splice(i, 0, removed); saveState(); rerender(); });
+  }));
+  el.querySelector('#manual-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const name = el.querySelector('#manual-name').value.trim();
+    if (!name) return;
+    state.manualItems = state.manualItems || [];
+    state.manualItems.push({ name, qty: 1, unit: '' });
+    saveState();
+    renderShop();
+    document.getElementById('manual-name')?.focus();
   });
-  el.querySelectorAll('[data-price]').forEach(input => {
-    input.addEventListener('change', () => {
-      const id = input.dataset.price;
-      const val = parseFloat(input.value);
-      if (!isNaN(val) && val >= 0) {
-        state.prices = state.prices || {};
-        state.prices[id] = Math.round(val * 100);
-        saveState();
-        renderShop();
-      }
-    });
-  });
-  document.getElementById('copy-list')?.addEventListener('click', () => {
-    const text = list.map(i => `${i.display} ${i.canon.name}`).join('\n');
-    navigator.clipboard.writeText(text).then(() => showUndoToast('List copied'));
-  });
-  document.getElementById('share-list')?.addEventListener('click', () => {
-    const text = list.map(i => `${i.display} ${i.canon.name}`).join('\n');
+  const copy = async (text, msg) => {
+    try { await navigator.clipboard.writeText(text); showUndoToast(msg); }
+    catch { showUndoToast('Could not access the clipboard'); }
+  };
+  el.querySelector('#copy-list').addEventListener('click', () => copy(textList(), 'List copied'));
+  el.querySelector('#share-list').addEventListener('click', () => {
+    const text = textList();
     if (navigator.share) navigator.share({ title: 'Grocery list', text }).catch(() => {});
-    else showUndoToast('Copied (share not available)');
+    else copy(text, 'Sharing not available — list copied instead');
   });
-  document.getElementById('add-manual')?.addEventListener('click', () => {
-    const name = prompt('Item name:');
-    if (name) {
-      state.manualItems = state.manualItems || [];
-      state.manualItems.push({ name, qty: 1, unit: '' });
-      saveState();
-      renderShop();
+  el.querySelector('#include-eaten').addEventListener('change', e => { shopIncludeEaten = e.target.checked; renderShop(); });
+}
+
+/* ---------- recipes ---------- */
+const recipeFilter = { q: '', source: 'all', slot: 'all' };
+let editingId = null; // null = closed, '' = new, id = editing
+function recipeMatches(m, term) {
+  if (!term) return true;
+  return m.name.toLowerCase().includes(term) || (m.ingredients || []).some(i => (i.name || '').toLowerCase().includes(term));
+}
+function filteredRecipes() {
+  const term = recipeFilter.q.trim().toLowerCase();
+  return getAllMeals().filter(m => {
+    if (!recipeMatches(m, term)) return false;
+    const src = getRecipeSource(m);
+    if (recipeFilter.source === 'favorites' && !isFavorite(m.id)) return false;
+    if (['builtin', 'custom', 'imported'].includes(recipeFilter.source) && src !== recipeFilter.source) return false;
+    if (recipeFilter.slot !== 'all' && m.slot !== recipeFilter.slot) return false;
+    return true;
+  });
+}
+function recipeCardHtml(m) {
+  const src = getRecipeSource(m);
+  return `<li><a class="card recipe-card" href="#recipe/${encodeURIComponent(m.id)}">
+    <span class="recipe-card-top"><strong>${escapeHtml(m.name)}</strong>${isFavorite(m.id) ? '<span class="fav-mark" aria-label="Favorite">★</span>' : ''}</span>
+    ${m.blurb ? `<span class="recipe-blurb">${escapeHtml(m.blurb)}</span>` : ''}
+    <span class="tags"><span class="badge">${cap(m.slot || 'dinner')}</span>${src !== 'builtin' ? `<span class="badge accent">${SOURCE_LABEL[src]}</span>` : ''}
+      <span class="muted">${m.totalMin ? `${m.totalMin} min · ` : ''}$${((m.centsPerServing || 200) / 100).toFixed(2)}/serving est.</span></span>
+  </a></li>`;
+}
+function drawRecipeResults() {
+  const list = filteredRecipes();
+  const box = document.getElementById('recipe-results');
+  const count = document.getElementById('recipe-count');
+  if (!box) return;
+  count.textContent = `${list.length} of ${getAllMeals().length} recipes`;
+  box.innerHTML = list.length ? `<ul class="recipe-list">${list.map(recipeCardHtml).join('')}</ul>`
+    : `<div class="empty"><strong>No recipes match</strong>${recipeFilter.source === 'favorites' && !recipeFilter.q ? 'Tap ☆ on a recipe to add it to Favorites.' : recipeFilter.source === 'imported' && !recipeFilter.q ? 'Use “Import” to bring in a recipe from a URL or pasted text.' : 'Try a different search or filter.'}</div>`;
+}
+function chip(group, value, label) {
+  return `<button type="button" class="chip" data-chip-group="${group}" data-chip="${value}" aria-pressed="${recipeFilter[group] === value}">${label}</button>`;
+}
+function recipeFormHtml(m) {
+  const v = m || { name: '', slot: 'dinner', servings: 2, blurb: '', ingredients: [], steps: [] };
+  const ingText = (v.ingredients || []).map(i => `${i.qty != null ? smartNumber(i.qty) : ''} ${i.unit || ''} ${i.name}`.replace(/\s+/g, ' ').trim()).join('\n');
+  return `<div id="recipe-form" class="card">
+    <h3>${m ? 'Edit recipe' : 'New recipe'}</h3>
+    <form id="recipe-form-el" novalidate>
+      <div id="form-errors" role="alert" hidden></div>
+      <label>Name <input name="name" required value="${escapeHtml(v.name)}"></label><div class="error" data-field="name"></div>
+      <label>Meal
+        <select name="slot">${SLOTS.map(s => `<option value="${s}" ${v.slot === s ? 'selected' : ''}>${cap(s)}</option>`).join('')}</select>
+      </label>
+      <label>Servings <input name="servings" type="number" min="1" inputmode="numeric" value="${escapeHtml(v.servings || 1)}"></label><div class="error" data-field="servings"></div>
+      <label>Total minutes (optional) <input name="totalMin" type="number" min="0" inputmode="numeric" value="${escapeHtml(v.totalMin || '')}"></label>
+      <label>Calories per serving (optional) <input name="calories" type="number" min="0" inputmode="numeric" value="${escapeHtml(v.calories || '')}"></label><div class="error" data-field="calories"></div>
+      <label>Protein g per serving (optional) <input name="protein" type="number" min="0" inputmode="numeric" value="${escapeHtml(v.protein || '')}"></label><div class="error" data-field="protein"></div>
+      <label>Blurb <textarea name="blurb" rows="2">${escapeHtml(v.blurb || '')}</textarea></label>
+      <label>Ingredients (one per line, e.g. “1 1/2 cup rolled oats”) <textarea name="ingredients" rows="5">${escapeHtml(ingText)}</textarea></label>
+      <label>Steps (one per line) <textarea name="steps" rows="5">${escapeHtml((v.steps || []).join('\n'))}</textarea></label>
+      <div class="button-row"><button type="submit">Save recipe</button> <button type="button" class="secondary" id="cancel-recipe">Cancel</button></div>
+    </form></div>`;
+}
+function wireRecipeForm(root, existing, onDone) {
+  root.querySelector('#cancel-recipe')?.addEventListener('click', () => onDone(null));
+  root.querySelector('#recipe-form-el')?.addEventListener('submit', e => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.target));
+    const result = validateRecipeForm(data);
+    const errorSummary = root.querySelector('#form-errors');
+    root.querySelectorAll('.error').forEach(x => x.textContent = '');
+    if (!result.valid) {
+      errorSummary.hidden = false;
+      errorSummary.textContent = 'Please fix the errors below.';
+      Object.entries(result.errors).forEach(([field, msg]) => {
+        const errEl = root.querySelector(`.error[data-field="${field}"]`);
+        if (errEl) errEl.textContent = msg;
+      });
+      root.querySelector(`[name="${Object.keys(result.errors)[0]}"]`)?.focus();
+      return;
     }
+    errorSummary.hidden = true;
+    const ingredients = String(data.ingredients || '').split('\n').map(l => l.trim()).filter(Boolean).map(parseIngredientLine).filter(i => i.name)
+      .map(i => {
+        const old = existing?.ingredients?.find(o => o.name === i.name);
+        return old?.aisle ? { ...i, aisle: old.aisle } : i;
+      });
+    const patch = {
+      name: data.name.trim(),
+      slot: data.slot,
+      servings: Number(data.servings),
+      totalMin: Number(data.totalMin) || undefined,
+      blurb: data.blurb || '',
+      ingredients,
+      steps: String(data.steps || '').split('\n').map(s => s.trim()).filter(Boolean),
+      calories: Number(data.calories) || undefined,
+      protein: data.protein === '' ? undefined : Number(data.protein)
+    };
+    if (patch.protein == null) delete patch.protein;
+    let saved;
+    if (existing) saved = updateCustomMeal(existing.id, patch);
+    else saved = addCustomMeal({ ...patch, source: 'custom', centsPerServing: 200 });
+    showUndoToast(existing ? 'Recipe updated' : 'Recipe saved');
+    onDone(saved);
+  });
+}
+
+function renderRecipes() {
+  const el = document.getElementById('recipes-content');
+  document.getElementById('recipes-title').textContent = 'Recipes';
+  el.innerHTML = `
+    <div class="button-row">
+      <button type="button" id="new-recipe">Write a recipe</button>
+      <button type="button" id="import-recipe" class="secondary">Import from URL / text</button>
+    </div>
+    <div id="recipe-form-slot"></div>
+    <div id="import-panel" class="card" hidden>
+      <h3>Import recipe</h3>
+      <p>Paste a recipe URL, raw text, or the page HTML (schema.org/Recipe preferred).</p>
+      <label for="import-text" class="sr-only">Recipe URL or text</label>
+      <textarea id="import-text" rows="4" placeholder="https://example.com/recipe or paste recipe text"></textarea>
+      <div class="button-row"><button type="button" id="do-import">Import</button> <button type="button" class="secondary" id="cancel-import">Cancel</button></div>
+      <div id="import-result" aria-live="polite"></div>
+    </div>
+    <label for="meal-search" class="sr-only">Search recipes</label>
+    <input id="meal-search" type="search" placeholder="Search name or ingredient" value="${escapeHtml(recipeFilter.q)}" autocomplete="off">
+    <div class="chips" role="group" aria-label="Filter by source">
+      ${chip('source', 'all', 'All')}${chip('source', 'builtin', 'Built-in')}${chip('source', 'custom', 'Custom')}${chip('source', 'imported', 'Imported')}${chip('source', 'favorites', '★ Favorites')}
+    </div>
+    <div class="chips" role="group" aria-label="Filter by meal">
+      ${chip('slot', 'all', 'Any meal')}${chip('slot', 'breakfast', 'Breakfast')}${chip('slot', 'lunch', 'Lunch')}${chip('slot', 'dinner', 'Dinner')}
+    </div>
+    <p id="recipe-count" class="muted" aria-live="polite"></p>
+    <div id="recipe-results"></div>`;
+  drawRecipeResults();
+  // Search re-renders only the results so the input keeps focus (old version rebuilt the whole page per keystroke)
+  el.querySelector('#meal-search').addEventListener('input', e => { recipeFilter.q = e.target.value; drawRecipeResults(); });
+  el.querySelectorAll('[data-chip]').forEach(b => b.addEventListener('click', () => {
+    recipeFilter[b.dataset.chipGroup] = b.dataset.chip;
+    el.querySelectorAll(`[data-chip-group="${b.dataset.chipGroup}"]`).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    drawRecipeResults();
+  }));
+  const formSlot = el.querySelector('#recipe-form-slot');
+  el.querySelector('#new-recipe').addEventListener('click', () => {
+    el.querySelector('#import-panel').hidden = true;
+    formSlot.innerHTML = recipeFormHtml(null);
+    formSlot.querySelector('[name="name"]').focus();
+    wireRecipeForm(formSlot, null, saved => {
+      formSlot.innerHTML = '';
+      if (saved) location.hash = '#recipe/' + encodeURIComponent(saved.id); else drawRecipeResults();
+    });
+  });
+  el.querySelector('#import-recipe').addEventListener('click', () => {
+    formSlot.innerHTML = '';
+    el.querySelector('#import-panel').hidden = false;
+    el.querySelector('#import-text').focus();
+  });
+  el.querySelector('#cancel-import').addEventListener('click', () => { el.querySelector('#import-panel').hidden = true; });
+  el.querySelector('#do-import').addEventListener('click', () => runImport(el));
+}
+
+async function runImport(el) {
+  const text = el.querySelector('#import-text').value.trim();
+  const resultEl = el.querySelector('#import-result');
+  if (!text) { resultEl.textContent = 'Please paste a URL or recipe text.'; return; }
+  resultEl.innerHTML = '<p>Importing…</p>';
+  let parsed;
+  try { parsed = await parseRecipeImport(text); } catch { parsed = null; }
+  if (!parsed || !parsed.name) {
+    resultEl.innerHTML = '<p>Could not extract a recipe. Try pasting the full recipe text, or a different site.</p>';
+    return;
+  }
+  const sourceUrl = /^https?:\/\//i.test(text) ? text : undefined;
+  resultEl.innerHTML = `
+    <div class="card">
+      <h4>Review import</h4>
+      <label>Name <input id="imp-name" value="${escapeHtml(parsed.name)}"></label>
+      <label>Meal <select id="imp-slot">${SLOTS.map(s => `<option value="${s}" ${s === 'dinner' ? 'selected' : ''}>${cap(s)}</option>`).join('')}</select></label>
+      <label>Servings <input id="imp-servings" type="number" min="1" value="${escapeHtml(parsed.servings || 2)}"></label>
+      <label>Blurb <textarea id="imp-blurb" rows="2">${escapeHtml(parsed.blurb || '')}</textarea></label>
+      <p><strong>Ingredients (${parsed.ingredients.length})</strong></p>
+      <ul>${parsed.ingredients.map(i => `<li>${escapeHtml(smartNumber(i.qty || 1))} ${escapeHtml(i.unit || '')} ${escapeHtml(i.name)}</li>`).join('')}</ul>
+      <p><strong>Steps (${(parsed.steps || []).length})</strong></p>
+      <ol>${(parsed.steps || []).map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ol>
+      <div class="button-row"><button type="button" id="save-import">Save recipe</button> <button type="button" class="secondary" id="cancel-import-review">Cancel</button></div>
+    </div>`;
+  resultEl.querySelector('#cancel-import-review').addEventListener('click', () => { el.querySelector('#import-panel').hidden = true; resultEl.innerHTML = ''; });
+  resultEl.querySelector('#save-import').addEventListener('click', () => {
+    const name = resultEl.querySelector('#imp-name').value.trim() || parsed.name;
+    const servings = Number(resultEl.querySelector('#imp-servings').value) || 2;
+    const blurb = resultEl.querySelector('#imp-blurb').value.trim();
+    const est = estimateFromDb(parsed.ingredients);
+    for (const raw of est.unmatched) {
+      const picks = searchIngredients(raw.split(' ').pop(), 5);
+      if (!picks.length) continue;
+      const choice = prompt(`No nutrition match for "${raw}". Pick a number, or Cancel to keep as is:\n` + picks.map((p, i) => `${i + 1}. ${p.name}`).join('\n'));
+      if (choice && picks[Number(choice) - 1]) {
+        const ing = parsed.ingredients.find(i => i.name === raw);
+        if (ing) ing.name = picks[Number(choice) - 1].name;
+      }
+    }
+    const final = estimateFromDb(parsed.ingredients);
+    const saved = addCustomMeal({
+      name, slot: resultEl.querySelector('#imp-slot').value, servings,
+      blurb: blurb || 'Imported', source: 'imported', sourceUrl,
+      ingredients: parsed.ingredients,
+      steps: parsed.steps && parsed.steps.length ? parsed.steps : ['Review and edit.'],
+      centsPerServing: Math.round(final.costCents / Math.max(1, servings)) || 200,
+      calories: Math.round(final.calories / servings), protein: Math.round(final.protein / servings),
+      carbs: Math.round(final.carbs / servings), fat: Math.round(final.fat / servings), fiber: Math.round(final.fiber / servings)
+    });
+    showUndoToast(`Imported with ${final.matched} matched ingredients`);
+    location.hash = '#recipe/' + encodeURIComponent(saved.id);
+  });
+}
+
+const detailServings = {};
+function renderRecipeDetail(id) {
+  const el = document.getElementById('recipes-content');
+  const meal = findMeal(id);
+  if (!meal) {
+    document.getElementById('recipes-title').textContent = 'Recipes';
+    el.innerHTML = '<div class="empty"><strong>Recipe not found</strong>It may have been deleted. <a href="#recipes">Back to all recipes</a></div>';
+    return;
+  }
+  document.getElementById('recipes-title').textContent = meal.name;
+  const src = getRecipeSource(meal);
+  const editable = src !== 'builtin';
+  const base = meal.servings || 1;
+  const servings = detailServings[id] || base;
+  const nut = mealNutrition(meal);
+  const fav = isFavorite(id);
+  const warn = allergenHits(meal);
+  const today = getTodayKey();
+  if (editingId === id) {
+    el.innerHTML = `<a href="#recipe/${encodeURIComponent(id)}" class="back-link" id="cancel-edit-link">← Back to recipe</a>${recipeFormHtml(meal)}`;
+    el.querySelector('#cancel-edit-link').addEventListener('click', () => { editingId = null; });
+    wireRecipeForm(el, meal, () => { editingId = null; renderRecipeDetail(id); });
+    el.querySelector('[name="name"]').focus();
+    return;
+  }
+  el.innerHTML = `
+    <a href="#recipes" class="back-link">← All recipes</a>
+    <article class="card recipe-detail">
+      <div class="detail-head">
+        <div class="tags"><span class="badge">${cap(meal.slot)}</span><span class="badge ${src !== 'builtin' ? 'accent' : 'muted'}">${SOURCE_LABEL[src]}</span>${warn.length ? `<span class="badge warn">Contains ${escapeHtml(warn.join(', '))}</span>` : ''}</div>
+        <button type="button" class="secondary fav-btn" id="fav-btn" aria-pressed="${fav}" aria-label="${fav ? 'Remove from favorites' : 'Add to favorites'}">${fav ? '★ Favorite' : '☆ Favorite'}</button>
+      </div>
+      ${meal.blurb ? `<p class="blurb">${escapeHtml(meal.blurb)}</p>` : ''}
+      ${meal.sourceUrl ? `<p class="muted small-text">Source: <a href="${escapeHtml(meal.sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(meal.sourceUrl)}</a></p>` : ''}
+      <dl class="facts">
+        <div><dt>Prep</dt><dd>${meal.prepMin ? meal.prepMin + ' min' : '—'}</dd></div>
+        <div><dt>Total</dt><dd>${meal.totalMin ? meal.totalMin + ' min' : '—'}</dd></div>
+        <div><dt>Makes</dt><dd>${base} serving${base === 1 ? '' : 's'}</dd></div>
+        <div><dt>Cost</dt><dd>$${((meal.centsPerServing || 200) / 100).toFixed(2)}/serving est.</dd></div>
+      </dl>
+      <h3>Nutrition per serving</h3>
+      <p class="nutrition-bar"><span><strong>${nut.calories}</strong> kcal</span><span><strong>${nut.protein}g</strong> protein</span><span><strong>${nut.carbs}g</strong> carbs</span><span><strong>${nut.fat}g</strong> fat</span><span><strong>${nut.fiber}g</strong> fiber</span></p>
+      <div class="scale-row">
+        <h3 id="ing-h">Ingredients</h3>
+        <div class="stepper" role="group" aria-label="Scale servings">
+          <button type="button" class="secondary icon" id="serv-minus" aria-label="Fewer servings">−</button>
+          <label for="serv-input" class="sr-only">Servings</label>
+          <input id="serv-input" type="number" min="1" inputmode="numeric" value="${servings}">
+          <span class="muted">servings</span>
+          <button type="button" class="secondary icon" id="serv-plus" aria-label="More servings">+</button>
+        </div>
+      </div>
+      <ul class="ingredients" id="ing-list" aria-labelledby="ing-h" aria-live="polite"></ul>
+      <p class="muted" id="scaled-cost"></p>
+      <h3>Steps</h3>
+      ${(meal.steps || []).length ? `<ol class="steps">${meal.steps.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ol>` : '<p class="muted">No steps yet.</p>'}
+    </article>
+    <section class="card" aria-labelledby="plan-h">
+      <h3 id="plan-h">Add to planner</h3>
+      <div class="plan-form">
+        <label>Day <input type="date" id="plan-date" value="${today}"></label>
+        <label>Meal <select id="plan-slot">${SLOTS.map(s => `<option value="${s}" ${meal.slot === s ? 'selected' : ''}>${cap(s)}</option>`).join('')}</select></label>
+        <button type="button" id="plan-add">Add to planner</button>
+      </div>
+      <p class="muted small-text" id="plan-note"></p>
+    </section>
+    <div class="button-row">
+      <button type="button" id="cook-btn">Start cook mode</button>
+      ${editable ? '<button type="button" class="secondary" id="edit-btn">Edit</button><button type="button" class="danger" id="delete-btn">Delete</button>' : ''}
+    </div>`;
+  const input = el.querySelector('#serv-input');
+  const drawIngredients = () => {
+    const s = Math.max(1, Number(input.value) || base);
+    detailServings[id] = s;
+    const scale = s / base;
+    el.querySelector('#ing-list').innerHTML = (meal.ingredients || []).map(i =>
+      `<li>${i.qty != null ? `<strong>${escapeHtml(formatQuantity((i.qty || 0) * scale, i.unit || ''))}</strong> ` : ''}${escapeHtml(i.name)}</li>`).join('') || '<li class="muted">No ingredients listed.</li>';
+    el.querySelector('#scaled-cost').textContent = `About $${(((meal.centsPerServing || 200) * s) / 100).toFixed(2)} for ${s} serving${s === 1 ? '' : 's'} (est.)`;
+  };
+  drawIngredients();
+  input.addEventListener('input', drawIngredients);
+  el.querySelector('#serv-minus').addEventListener('click', () => { input.value = Math.max(1, (Number(input.value) || base) - 1); drawIngredients(); });
+  el.querySelector('#serv-plus').addEventListener('click', () => { input.value = (Number(input.value) || base) + 1; drawIngredients(); });
+  const noteSlot = () => {
+    const d = el.querySelector('#plan-date').value, s = el.querySelector('#plan-slot').value;
+    const cur = d && state.days[d]?.[s];
+    el.querySelector('#plan-note').textContent = cur ? `Replaces ${mealName(cur)} (you can undo).` : '';
+  };
+  el.querySelector('#plan-date').addEventListener('change', noteSlot);
+  el.querySelector('#plan-slot').addEventListener('change', noteSlot);
+  noteSlot();
+  el.querySelector('#plan-add').addEventListener('click', () => {
+    const d = el.querySelector('#plan-date').value;
+    const s = el.querySelector('#plan-slot').value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { el.querySelector('#plan-note').textContent = 'Pick a day first.'; return; }
+    const chosen = Number(input.value) || base;
+    planChange('plan', () => {
+      setSlot(d, s, id);
+      if (chosen !== base) state.days[d][s].servings = chosen;
+    }, `Planned for ${s}, ${fmtDay(d)}`);
+    plannerWeekStart = weekStartOf(d);
+  });
+  el.querySelector('#fav-btn').addEventListener('click', () => {
+    const now = toggleFavorite(id);
+    showUndoToast(now ? 'Added to favorites' : 'Removed from favorites');
+    renderRecipeDetail(id);
+    document.getElementById('fav-btn')?.focus();
+  });
+  el.querySelector('#cook-btn').addEventListener('click', () => openCookMode(meal));
+  el.querySelector('#edit-btn')?.addEventListener('click', () => { editingId = id; renderRecipeDetail(id); });
+  el.querySelector('#delete-btn')?.addEventListener('click', () => {
+    if (!confirm(`Delete “${meal.name}”? You can undo right after.`)) return;
+    const removed = deleteCustomMeal(id);
+    if (!removed) return;
+    location.hash = '#recipes';
+    showUndoToast(`Deleted ${meal.name}`, () => {
+      restoreCustomMeal(removed);
+      location.hash = '#recipe/' + encodeURIComponent(id);
+      rerender();
+    });
   });
 }
 
@@ -303,7 +956,7 @@ function renderSettings() {
           <option value="keto" ${state.profile.goal === 'keto' ? 'selected' : ''}>Keto</option>
         </select>
       </label>
-      <label>Allergens (comma-separated) <input name="allergens" value="${(state.profile.allergens || []).join(', ')}"></label>
+      <label>Allergens (comma-separated) <input name="allergens" value="${escapeHtml((state.profile.allergens || []).join(', '))}"></label>
       <button type="submit">Save goal & allergens</button>
     </form>
     <div class="card">
@@ -312,9 +965,9 @@ function renderSettings() {
       <div id="members-list">
         ${members.map((m, i) => `
           <div class="card" style="margin-bottom:0.5rem; padding:0.75rem;">
-            <strong>${m.name || 'Person ' + (i+1)}</strong>
+            <strong>${escapeHtml(m.name || 'Person ' + (i+1))}</strong>
             <form data-member="${i}" style="margin-top:0.5rem;">
-              <label>Name <input name="name" value="${m.name || ''}"></label>
+              <label>Name <input name="name" value="${escapeHtml(m.name || '')}"></label>
               <label>Sex
                 <select name="sex">
                   <option value="female" ${m.sex === 'female' ? 'selected' : ''}>Female</option>
@@ -322,8 +975,8 @@ function renderSettings() {
                 </select>
               </label>
               <label>Age <input type="number" name="age" value="${m.age || 30}" min="1" max="120"></label>
-              <label>Height <input type="number" name="heightFt" value="${m.heightFt || 5}" min="3" max="8" style="width:50px;"> ft
-                <input type="number" name="heightIn" value="${m.heightIn || 6}" min="0" max="11" style="width:50px;"> in</label>
+              <label>Height <input type="number" name="heightFt" value="${m.heightFt || 5}" min="3" max="8" style="width:70px;" aria-label="Feet"> ft
+                <input type="number" name="heightIn" value="${m.heightIn || 6}" min="0" max="11" style="width:70px;" aria-label="Inches"> in</label>
               <label>Weight (lb) <input type="number" name="weightLb" value="${m.weightLb || 150}" min="50" max="500"></label>
               <label>Activity
                 <select name="activity">
@@ -331,6 +984,7 @@ function renderSettings() {
                   <option value="light" ${m.activity === 'light' ? 'selected' : ''}>Light</option>
                   <option value="moderate" ${m.activity === 'moderate' ? 'selected' : ''}>Moderate</option>
                   <option value="active" ${m.activity === 'active' ? 'selected' : ''}>Active</option>
+                  <option value="very" ${m.activity === 'very' ? 'selected' : ''}>Very active</option>
                 </select>
               </label>
               <label>Goal
@@ -349,11 +1003,16 @@ function renderSettings() {
       <button id="add-member" type="button">Add person</button>
     </div>
     <div class="card">
+      <h3>More</h3>
+      <p><a href="#review">Review your history →</a></p>
+      <p><a href="#recipes">Recipes →</a></p>
+    </div>
+    <div class="card">
       <h3>Data</h3>
-      <button id="export-btn">Export JSON backup</button>
-      <button id="import-btn">Import JSON</button>
+      <button id="export-btn" type="button">Export JSON backup</button>
+      <button id="import-btn" type="button" class="secondary">Import JSON</button>
       <input type="file" id="import-file" accept=".json" hidden>
-      <button id="reset-btn">Reset all data</button>
+      <button id="reset-btn" class="danger">Reset all data</button>
     </div>
     <div id="settings-errors" role="alert" hidden></div>
     <div id="conflicts" class="card" hidden></div>
@@ -367,6 +1026,13 @@ function renderSettings() {
     state.profile.householdSize = (state.profile.members || []).length || 1;
     saveState();
     renderSettings();
+    const conflicts = checkConflicts(state, state.profile).filter(c => c.date >= getTodayKey());
+    const box = document.getElementById('conflicts');
+    showUndoToast('Settings saved');
+    if (conflicts.length && box) {
+      box.hidden = false;
+      box.innerHTML = `<h3>Planned meals that now conflict</h3><ul>${conflicts.map(c => `<li>${fmtDay(c.date)} ${c.slot}: ${escapeHtml(c.name)} (${c.reasons.join(', ')})</li>`).join('')}</ul><p><a href="#planner">Open planner</a></p>`;
+    }
   });
   el.querySelectorAll('form[data-member]').forEach(form => {
     form.addEventListener('submit', e => {
@@ -385,6 +1051,7 @@ function renderSettings() {
       state.profile.householdSize = state.profile.members.length;
       saveState();
       renderSettings();
+      showUndoToast('Saved');
     });
   });
   el.querySelectorAll('[data-remove]').forEach(btn => {
@@ -418,7 +1085,10 @@ function renderSettings() {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'larder-backup.json';
+    document.body.appendChild(a);
     a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
   document.getElementById('import-btn')?.addEventListener('click', () => document.getElementById('import-file').click());
   document.getElementById('import-file')?.addEventListener('change', e => {
@@ -426,177 +1096,15 @@ function renderSettings() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      if (importData(reader.result)) renderSettings();
-      else showUndoToast('Import failed');
+      e.target.value = '';
+      if (importData(reader.result)) { renderSettings(); showUndoToast('Backup imported'); }
+      else showUndoToast('Import failed — not a Larder backup');
     };
     reader.readAsText(file);
   });
   document.getElementById('reset-btn')?.addEventListener('click', () => {
-    if (confirm('Reset all data?')) { resetData(); renderSettings(); }
+    if (confirm('Reset all data? This cannot be undone.')) { resetData(); renderSettings(); showUndoToast('All data reset'); }
   });
-}
-
-
-function renderMeals() {
-  const allMeals = getAllMeals();
-  const el = document.getElementById('meals-content');
-  const q = (document.getElementById('meal-search')?.value || '').toLowerCase();
-  const filtered = q ? allMeals.filter(m => m.name.toLowerCase().includes(q) || (m.ingredients||[]).some(i => (i.name||'').toLowerCase().includes(q))) : allMeals;
-  el.innerHTML = `
-    <p>${filtered.length} of ${allMeals.length} recipes. Estimated prices shown as "est."</p>
-    <input id="meal-search" type="search" placeholder="Search name or ingredient" value="${q}" style="margin-bottom:0.75rem;">
-    <button class="btn" id="new-recipe">Write a recipe</button>
-    <button class="btn" id="import-recipe" style="margin-left:0.5rem;">Import from URL / text</button>
-    <div id="recipe-form" class="card" hidden>
-      <h3>New recipe</h3>
-      <form id="recipe-form-el">
-        <div id="form-errors" role="alert" hidden></div>
-        <label>Name <input name="name" required></label><div class="error" data-field="name"></div>
-        <label>Slot
-          <select name="slot">
-            <option value="breakfast">Breakfast</option>
-            <option value="lunch">Lunch</option>
-            <option value="dinner">Dinner</option>
-          </select>
-        </label>
-        <label>Servings <input name="servings" type="number" min="1" inputmode="numeric" value="1"></label><div class="error" data-field="servings"></div>
-        <label>Calories (optional) <input name="calories" type="number" min="0" inputmode="numeric"></label><div class="error" data-field="calories"></div>
-        <label>Protein g (optional) <input name="protein" type="number" min="0" inputmode="numeric"></label><div class="error" data-field="protein"></div>
-        <label>Blurb <textarea name="blurb" rows="2" style="width:100%;max-width:400px;"></textarea></label>
-        <button type="submit">Save recipe</button>
-        <button type="button" id="cancel-recipe">Cancel</button>
-      </form>
-    </div>
-    <div id="import-panel" class="card" hidden>
-      <h3>Import recipe</h3>
-      <p>Paste a recipe URL, raw text, or the page HTML (schema.org/Recipe preferred).</p>
-      <textarea id="import-text" rows="4" style="width:100%;" placeholder="https://example.com/recipe or paste recipe text"></textarea>
-      <button id="do-import">Import</button>
-      <button type="button" id="cancel-import">Cancel</button>
-      <div id="import-result"></div>
-    </div>
-    <div>${filtered.map(m => `<div class="card"><h3>${m.name}${m.custom ? ' <small>(Yours)</small>' : ''}</h3><p>${m.blurb || ''}</p><small>${m.totalMin || '?'} min · $${((m.centsPerServing || 200)/100).toFixed(2)} est. · ${m.slot}</small></div>`).join('') || '<div class="empty"><strong>No recipes match</strong>Try a different search.</div>'}</div>
-  `;
-  document.getElementById('meal-search')?.addEventListener('input', () => renderMeals());
-  document.getElementById('new-recipe')?.addEventListener('click', () => {
-    document.getElementById('recipe-form').hidden = false;
-    document.getElementById('import-panel').hidden = true;
-  });
-  document.getElementById('import-recipe')?.addEventListener('click', () => {
-    document.getElementById('import-panel').hidden = false;
-    document.getElementById('recipe-form').hidden = true;
-  });
-  document.getElementById('cancel-recipe')?.addEventListener('click', () => {
-    document.getElementById('recipe-form').hidden = true;
-  });
-  document.getElementById('cancel-import')?.addEventListener('click', () => {
-    document.getElementById('import-panel').hidden = true;
-  });
-  document.getElementById('recipe-form-el')?.addEventListener('submit', e => {
-    e.preventDefault();
-    const form = new FormData(e.target);
-    const data = Object.fromEntries(form);
-    const result = validateRecipeForm(data);
-    const errorSummary = document.getElementById('form-errors');
-    document.querySelectorAll('.error').forEach(el => el.textContent = '');
-    if (!result.valid) {
-      errorSummary.hidden = false;
-      errorSummary.textContent = 'Please fix the errors below.';
-      Object.entries(result.errors).forEach(([field, msg]) => {
-        const errEl = document.querySelector(`.error[data-field="${field}"]`);
-        if (errEl) errEl.textContent = msg;
-      });
-      const first = Object.keys(result.errors)[0];
-      document.querySelector(`[name="${first}"]`)?.focus();
-    } else {
-      errorSummary.hidden = true;
-      const meal = {
-        name: data.name,
-        slot: data.slot,
-        servings: Number(data.servings),
-        blurb: data.blurb || '',
-        ingredients: [],
-        steps: [],
-        protein: Number(data.protein) || 0,
-        calories: Number(data.calories) || 0,
-        centsPerServing: 200
-      };
-      addCustomMeal(meal);
-      document.getElementById('recipe-form').hidden = true;
-      renderMeals();
-    }
-  });
-  document.getElementById('do-import')?.addEventListener('click', async () => {
-    const text = document.getElementById('import-text').value.trim();
-    const resultEl = document.getElementById('import-result');
-    if (!text) {
-      resultEl.textContent = 'Please paste a URL or recipe text.';
-      return;
-    }
-    resultEl.innerHTML = '<p>Importing…</p>';
-
-    const parsed = await parseRecipeImport(text);
-    if (!parsed || !parsed.name) {
-      resultEl.innerHTML = '<p>Could not extract a recipe. Try pasting the full recipe text, or a different site.</p>';
-      return;
-    }
-
-    // Review form before save
-    resultEl.innerHTML = `
-      <div class="card">
-        <h4>Review import</h4>
-        <label>Name <input id="imp-name" value="${escapeHtml(parsed.name)}" style="width:100%;"></label>
-        <label>Servings <input id="imp-servings" type="number" min="1" value="${parsed.servings || 2}" style="width:80px;"></label>
-        <label>Blurb <textarea id="imp-blurb" rows="2" style="width:100%;">${escapeHtml(parsed.blurb || '')}</textarea></label>
-        <p><strong>Ingredients (${parsed.ingredients.length})</strong></p>
-        <ul style="font-size:0.9rem;">${parsed.ingredients.map(i => `<li>${i.qty || 1} ${i.unit || ''} ${escapeHtml(i.name)}</li>`).join('')}</ul>
-        <p><strong>Steps (${(parsed.steps || []).length})</strong></p>
-        <ol style="font-size:0.9rem;">${(parsed.steps || []).map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ol>
-        <button id="save-import">Save as custom recipe</button>
-        <button type="button" id="cancel-import-review">Cancel</button>
-      </div>
-    `;
-    document.getElementById('cancel-import-review')?.addEventListener('click', () => {
-      document.getElementById('import-panel').hidden = true;
-    });
-    document.getElementById('save-import')?.addEventListener('click', async () => {
-      const name = document.getElementById('imp-name').value.trim() || parsed.name;
-      const servings = Number(document.getElementById('imp-servings').value) || 2;
-      const blurb = document.getElementById('imp-blurb').value.trim();
-      const est = estimateFromDb(parsed.ingredients);
-      // Prompt for unmatched
-      for (const raw of est.unmatched) {
-        const picks = searchIngredients(raw, 5);
-        const choice = prompt(`No match for "${raw}". Pick a number or Cancel to skip:\n` + picks.map((p,i) => `${i+1}. ${p.name}`).join('\n'));
-        if (choice && picks[Number(choice)-1]) {
-          const db = picks[Number(choice)-1];
-          parsed.ingredients.find(i => i.name === raw).name = db.name;
-        }
-      }
-      const final = estimateFromDb(parsed.ingredients);
-      addCustomMeal({
-        name,
-        slot: 'dinner',
-        servings,
-        blurb: blurb || 'Imported',
-        ingredients: parsed.ingredients,
-        steps: parsed.steps && parsed.steps.length ? parsed.steps : ['Review and edit.'],
-        centsPerServing: Math.round(final.costCents / Math.max(1, servings)),
-        calories: final.calories,
-        protein: final.protein,
-        carbs: final.carbs,
-        fat: final.fat,
-        fiber: final.fiber
-      });
-      showUndoToast(`Saved with ${final.matched} matched ingredients`);
-      document.getElementById('import-panel').hidden = true;
-      renderMeals();
-    });
-  });
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c]));
 }
 
 async function parseRecipeImport(input) {
@@ -641,14 +1149,15 @@ async function parseRecipeImport(input) {
       collect(data);
       const recipe = candidates[0];
       if (recipe) {
-        name = recipe.name || name;
-        blurb = recipe.description || blurb;
-        servings = parseInt(recipe.recipeYield) || servings;
+        name = String(recipe.name || name).trim();
+        blurb = String(recipe.description || blurb).replace(/<[^>]+>/g, '').trim();
+        servings = parseInt([].concat(recipe.recipeYield || [])[0]) || servings;
         const ings = recipe.recipeIngredient || recipe.ingredients || [];
         ingredients = ings.map(parseIngredientLine).filter(i => i.name);
         const instr = recipe.recipeInstructions || recipe.instructions || [];
         steps = (Array.isArray(instr) ? instr : [instr]).flatMap(s => {
           if (typeof s === 'string') return [s];
+          if (s.itemListElement) return s.itemListElement.map(i => i.text || i).filter(x => typeof x === 'string');
           if (s.text) return [s.text];
           if (s.itemListElement) return s.itemListElement.map(i => i.text || i).filter(Boolean);
           return [];
@@ -690,18 +1199,6 @@ async function parseRecipeImport(input) {
   return { name, ingredients, steps, servings, blurb };
 }
 
-function parseIngredientLine(line) {
-  const s = String(line).replace(/<[^>]+>/g, '').trim();
-  if (!s) return { name: '', qty: 1, unit: '' };
-  // Common patterns: "2 cups flour", "1/2 tsp salt", "3 large eggs"
-  const m = s.match(/^([\d\/\.\s]+)\s*([a-zA-Z]+)?\s+(.*)$/);
-  if (m) {
-    let qty = 1;
-    try { qty = eval(m[1].replace(/\s+/g, '')) || 1; } catch { qty = parseFloat(m[1]) || 1; }
-    return { qty, unit: m[2] || '', name: m[3].trim() };
-  }
-  return { qty: 1, unit: '', name: s };
-}
 
 function renderPantry() {
   const el = document.getElementById('pantry-content');
@@ -710,14 +1207,24 @@ function renderPantry() {
   const suggestions = suggestUseItUp();
   el.innerHTML = `
     <p>${items.length} items in pantry.</p>
-    ${expiring.length ? `<div class="card" role="alert" style="background:#fff3cd;"><strong>Expiring soon:</strong> ${expiring.map(e => e.name).join(', ')}</div>` : ''}
-    ${suggestions.length ? `<div class="card"><strong>Use it up:</strong> ${suggestions.map(s => s.name).join(', ')}</div>` : ''}
+    ${expiring.length ? `<div class="card notice" role="status"><strong>Expiring soon:</strong> ${expiring.map(e => escapeHtml(e.name)).join(', ')}</div>` : ''}
+    ${suggestions.length ? `<div class="card"><strong>Use it up:</strong> ${suggestions.map(s => `<a href="#recipe/${encodeURIComponent(s.id)}">${escapeHtml(s.name)}</a>`).join(', ')}</div>` : ''}
+    <form class="card" id="pantry-add-form">
+      <h3>Add an item</h3>
+      <div class="plan-form">
+        <label>Item <input name="name" required placeholder="e.g. rolled oats" autocomplete="off"></label>
+        <label>Qty <input name="qty" type="number" min="0" step="any" inputmode="decimal" value="1"></label>
+        <label>Unit <input name="unit" placeholder="cup, lb, can…" autocomplete="off"></label>
+        <label>Expires (optional) <input name="expiry" type="date"></label>
+        <button type="submit">Add to pantry</button>
+      </div>
+    </form>
     <div class="card">
       <h3>Cook from what I have</h3>
       <p>Select ingredients in your pantry. Meals that use them will be ranked by how many you already have.</p>
       ${items.length ? `
         <div id="pantry-select" style="margin:0.5rem 0;">
-          ${items.map(item => `<label style="display:inline-flex;align-items:center;margin:0.25rem 0.5rem 0.25rem 0;"><input type="checkbox" data-pantry-id="${item.id}" checked> ${item.name}</label>`).join('')}
+          ${items.map(item => `<label style="display:inline-flex;align-items:center;margin:0.25rem 0.5rem 0.25rem 0;"><input type="checkbox" data-pantry-id="${item.id}" checked> ${escapeHtml(item.name)}</label>`).join('')}
         </div>
         <button id="find-meals" type="button">Find meals</button>
         <div id="pantry-results" style="margin-top:0.75rem;"></div>
@@ -733,31 +1240,42 @@ function renderPantry() {
     </div>
     ${items.length ? items.map(item => `
       <div class="card">
-        <strong>${item.name}</strong> · ${item.qty || 0} ${item.unit || ''}
-        <br><small>Location: ${item.location || 'pantry'} · Added ${new Date(item.added).toLocaleDateString()}${item.expiry ? ` · Expires ${new Date(item.expiry).toLocaleDateString()}` : ''}</small>
-        <button data-remove="${item.id}" style="margin-top:0.5rem;">Remove</button>
+        <strong>${escapeHtml(item.name)}</strong> · ${escapeHtml(smartNumber(item.qty || 0))} ${escapeHtml(item.unit || '')}
+        <br><small>Location: ${escapeHtml(item.location || 'pantry')} · Added ${new Date(item.added).toLocaleDateString()}${item.expiry ? ` · Expires ${/^\d{4}-\d{2}-\d{2}$/.test(item.expiry) ? parseDateKey(item.expiry).toLocaleDateString() : new Date(item.expiry).toLocaleDateString()}` : ''}</small>
+        <button type="button" class="secondary small" data-remove="${item.id}" aria-label="Remove ${escapeHtml(item.name)}">Remove</button>
       </div>
-    `).join('') : '<div class="empty"><strong>Pantry is empty</strong>Add items from Shop or scan a receipt.</div>'}
-    <p><small>Cooking a meal can deduct ingredients (foundation ready).</small></p>
+    `).join('') : '<div class="empty"><strong>Pantry is empty</strong>Add an item above, from Shop, or scan a receipt.</div>'}
+    <p><small>Marking a meal “We ate this” deducts its ingredients from the pantry.</small></p>
   `;
+  el.querySelector('#pantry-add-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const name = String(fd.get('name') || '').trim();
+    if (!name) return;
+    addToPantry({ name, qty: Number(fd.get('qty')) || 1, unit: String(fd.get('unit') || '').trim(), location: 'pantry', expiry: fd.get('expiry') || null });
+    showUndoToast(`${name} added`);
+    renderPantry();
+    document.querySelector('#pantry-add-form [name="name"]')?.focus();
+  });
   document.getElementById('find-meals')?.addEventListener('click', () => {
     const selected = new Set([...el.querySelectorAll('#pantry-select input:checked')].map(cb => cb.dataset.pantryId));
-    const selectedIds = new Set((state.pantry || []).filter(p => selected.has(p.id)).map(p => normalizeIngredient(p.name).id));
+    const selectedIds = new Set((state.pantry || []).filter(p => selected.has(p.id) && p.name).map(p => normalizeIngredient(p.name).id));
     const allMeals = getAllMeals();
     const scored = allMeals.map(meal => {
       const ings = meal.ingredients || [];
-      const matchCount = ings.filter(ing => selectedIds.has(normalizeIngredient(ing.name).id)).length;
+      const matchCount = ings.filter(ing => ing.name && selectedIds.has(normalizeIngredient(ing.name).id)).length;
       const coverage = ings.length ? matchCount / ings.length : 0;
       return { meal, matchCount, coverage };
     }).filter(s => s.matchCount > 0).sort((a, b) => b.coverage - a.coverage || b.matchCount - a.matchCount).slice(0, 8);
     const resultsEl = document.getElementById('pantry-results');
+    if (!selectedIds.size) { resultsEl.innerHTML = '<p>Select at least one ingredient.</p>'; return; }
     if (!scored.length) {
       resultsEl.innerHTML = '<p>No meals match the selected ingredients.</p>';
       return;
     }
     resultsEl.innerHTML = scored.map(s => `
       <div class="card" style="margin-bottom:0.5rem;">
-        <strong>${s.meal.name}</strong>
+        <a href="#recipe/${encodeURIComponent(s.meal.id)}"><strong>${escapeHtml(s.meal.name)}</strong></a>
         <p style="margin:0.25rem 0;font-size:0.9rem;">Uses ${s.matchCount} of ${s.meal.ingredients.length} selected ingredients (${Math.round(s.coverage*100)}%)</p>
         <button data-plan="${s.meal.id}" data-slot="${s.meal.slot}" style="font-size:0.85rem;">Plan for next open ${s.meal.slot}</button>
       </div>
@@ -766,25 +1284,26 @@ function renderPantry() {
       btn.addEventListener('click', () => {
         const meal = allMeals.find(m => m.id === btn.dataset.plan);
         if (!meal) return;
-        const today = getTodayKey();
-        const day = ensureDay(today);
-        if (!day[meal.slot]) {
-          day[meal.slot] = { mealId: meal.id, status: 'planned' };
-          saveState();
-          showUndoToast(`Planned ${meal.name} for today`);
-          renderPantry();
-        } else {
-          showUndoToast(`Today's ${meal.slot} is already filled`);
+        // next open slot of this meal type, starting today (up to 2 weeks out)
+        let target = null;
+        for (let i = 0; i < 14 && !target; i++) {
+          const k = addDays(getTodayKey(), i);
+          if (!state.days[k]?.[meal.slot]) target = k;
         }
+        if (!target) { showUndoToast(`No open ${meal.slot} in the next two weeks`); return; }
+        planChange('plan', () => setSlot(target, meal.slot, meal.id), `Planned ${meal.name} for ${fmtDay(target)}`);
       });
     });
   });
   // Wire remove
   el.querySelectorAll('[data-remove]').forEach(btn => {
     btn.addEventListener('click', () => {
-      state.pantry = state.pantry.filter(p => p.id !== btn.dataset.remove);
+      const idx = state.pantry.findIndex(p => p.id === btn.dataset.remove);
+      if (idx < 0) return;
+      const [removed] = state.pantry.splice(idx, 1);
       saveState();
       renderPantry();
+      showUndoToast(`Removed ${removed.name}`, () => { state.pantry.splice(idx, 0, removed); saveState(); rerender(); });
     });
   });
   // Receipt scanning
@@ -798,6 +1317,10 @@ function renderPantry() {
   scanBtn.addEventListener('click', async () => {
     const file = fileInput.files[0];
     if (!file) return;
+    if (typeof Tesseract === 'undefined') {
+      statusEl.textContent = 'Receipt scanning needs a connection the first time (the OCR library could not load).';
+      return;
+    }
     statusEl.textContent = 'Scanning receipt on device…';
     scanBtn.disabled = true;
     try {
@@ -809,7 +1332,7 @@ function renderPantry() {
       if (items.length) {
         resultsEl.innerHTML = `
           <ul style="list-style:none; padding:0;">
-            ${items.map((it, i) => `<li class="card" style="margin-bottom:0.5rem;"><label><input type="checkbox" data-idx="${i}" checked> ${it.name} <small>(${it.qty} ${it.unit})</small></label></li>`).join('')}
+            ${items.map((it, i) => `<li class="card" style="margin-bottom:0.5rem;"><label><input type="checkbox" data-idx="${i}" checked> ${escapeHtml(it.name)} <small>(${escapeHtml(it.qty)} ${escapeHtml(it.unit)})</small></label></li>`).join('')}
           </ul>
           <button id="add-selected">Add selected to pantry</button>
         `;
@@ -865,16 +1388,14 @@ function parseReceiptText(text) {
 
 function renderReview() {
   const el = document.getElementById('review-content');
-  const days = Object.keys(state.days || {}).length;
+  const days = Object.values(state.days || {}).filter(d => d && SLOTS.some(s => d[s])).length;
   const eaten = Object.values(state.days || {}).reduce((acc, day) => acc + ['breakfast','lunch','dinner'].filter(s => day[s]?.status === 'eaten').length, 0);
   const pantryCount = (state.pantry || []).length;
   const customCount = (state.customMeals || []).length;
   // Last 14 days of eaten meals for a simple trend
   const trend = [];
   for (let i = 13; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const key = d.toISOString().slice(0, 10);
+    const key = addDays(getTodayKey(), -i);
     const day = state.days[key] || {};
     const count = ['breakfast','lunch','dinner'].filter(s => day[s]?.status === 'eaten').length;
     trend.push(count);
@@ -890,162 +1411,36 @@ function renderReview() {
     </div>
     <div class="card">
       <h3>Eaten meals (last 14 days)</h3>
-      <div style="display:flex;align-items:flex-end;gap:4px;height:70px;">${bars}</div>
+      <div style="display:flex;align-items:flex-end;gap:4px;height:70px;" role="img" aria-label="Meals eaten per day over the last 14 days: ${trend.join(', ')}">${bars}</div>
       <p style="font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">Each bar is one day.</p>
     </div>
     <p><small>Local-only insights. No data leaves the device.</small></p>
   `;
 }
 
-function renderWeek() {
-  const el = document.getElementById('week-content');
-  const isTouch = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-  const daysHtml = [];
-  const today = new Date();
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() + i);
-    const key = d.toISOString().slice(0, 10);
-    const day = state.days[key] || {};
-    const slots = ['breakfast', 'lunch', 'dinner'].map(slot => {
-      const entry = day[slot];
-      const name = entry ? (getAllMeals().find(m => m.id === entry.mealId)?.name || 'Meal') : '';
-      const has = !!entry;
-      return `<div class="meal-slot" draggable="${has && !isTouch}" data-date="${key}" data-slot="${slot}" data-has="${has}">
-        <span class="slot-label">${slot}</span>
-        <span class="slot-name${has ? '' : ' slot-empty'}">${has ? name : 'Empty'}${entry?.leftover ? ' · leftover' : ''}</span>
-      </div>`;
-    }).join('');
-    daysHtml.push(`<div class="week-day" data-date="${key}">
-      <div class="week-day-header">${d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</div>
-      ${slots}
-      <div class="week-actions"><button class="secondary" data-copy="${key}">Copy day</button></div>
-    </div>`);
-  }
-  el.innerHTML = `<p style="color:var(--muted);margin-bottom:1rem;">${isTouch ? 'Tap a meal, then tap another slot to move it.' : 'Drag meals between days or slots.'}</p>
-    <div id="move-hint" hidden style="background:var(--primary-soft);padding:0.6rem 1rem;border-radius:8px;margin-bottom:1rem;font-weight:500;">Select a destination slot, or tap Cancel.</div>
-    <div id="week-days">${daysHtml.join('')}</div>`;
-
-  let selected = null; // {date, slot} for touch mode
-
-  function clearSelection() {
-    selected = null;
-    el.querySelectorAll('.selected, .drop-target').forEach(n => n.classList.remove('selected', 'drop-target'));
-    document.getElementById('move-hint').hidden = true;
-  }
-
-  function doMove(fromDate, fromSlot, toDate, toSlot) {
-    if (fromDate === toDate && fromSlot === toSlot) { clearSelection(); return; }
-    const fromDay = state.days[fromDate];
-    if (!fromDay || !fromDay[fromSlot]) { clearSelection(); return; }
-    pushUndo({ label: 'move meal' });
-    if (!state.days[toDate]) state.days[toDate] = { breakfast: null, lunch: null, dinner: null };
-    const existing = state.days[toDate][toSlot];
-    state.days[toDate][toSlot] = fromDay[fromSlot];
-    fromDay[fromSlot] = existing || null;
-    saveState();
-    showUndoToast('Meal moved');
-    clearSelection();
-    renderWeek();
-  }
-
-  // Desktop HTML5 drag
-  if (!isTouch) {
-    el.querySelectorAll('.meal-slot[draggable="true"]').forEach(slotEl => {
-      slotEl.addEventListener('dragstart', e => {
-        slotEl.classList.add('dragging');
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', JSON.stringify({ date: slotEl.dataset.date, slot: slotEl.dataset.slot }));
-      });
-      slotEl.addEventListener('dragend', () => {
-        slotEl.classList.remove('dragging');
-        el.querySelectorAll('.drag-over, .drop-target').forEach(n => n.classList.remove('drag-over', 'drop-target'));
-      });
-    });
-    el.querySelectorAll('.week-day').forEach(dayEl => {
-      dayEl.addEventListener('dragover', e => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        dayEl.classList.add('drag-over');
-        const target = e.target.closest('.meal-slot');
-        el.querySelectorAll('.drop-target').forEach(n => n.classList.remove('drop-target'));
-        if (target) target.classList.add('drop-target');
-      });
-      dayEl.addEventListener('dragleave', e => {
-        if (!dayEl.contains(e.relatedTarget)) dayEl.classList.remove('drag-over');
-      });
-      dayEl.addEventListener('drop', e => {
-        e.preventDefault();
-        dayEl.classList.remove('drag-over');
-        el.querySelectorAll('.drop-target').forEach(n => n.classList.remove('drop-target'));
-        const data = JSON.parse(e.dataTransfer.getData('text/plain') || '{}');
-        const toDate = dayEl.dataset.date;
-        const toSlot = e.target.closest('.meal-slot')?.dataset.slot || 'dinner';
-        doMove(data.date, data.slot, toDate, toSlot);
-      });
-    });
-  }
-
-  // Touch / coarse pointer: tap to select, tap to move
-  if (isTouch) {
-    el.querySelectorAll('.meal-slot').forEach(slotEl => {
-      slotEl.addEventListener('click', e => {
-        const date = slotEl.dataset.date;
-        const slot = slotEl.dataset.slot;
-        const has = slotEl.dataset.has === 'true';
-        if (!selected) {
-          if (!has) return;
-          selected = { date, slot };
-          slotEl.classList.add('selected');
-          el.querySelectorAll('.meal-slot').forEach(s => {
-            if (s !== slotEl) s.classList.add('drop-target');
-          });
-          document.getElementById('move-hint').hidden = false;
-        } else {
-          doMove(selected.date, selected.slot, date, slot);
-        }
-      });
-    });
-    document.getElementById('move-hint').insertAdjacentHTML('beforeend', ' <button type="button" id="cancel-move" class="secondary" style="margin-left:0.5rem;min-height:32px;padding:0.2rem 0.7rem;">Cancel</button>');
-    document.getElementById('cancel-move')?.addEventListener('click', clearSelection);
-  }
-
-  el.querySelectorAll('[data-copy]').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const from = btn.dataset.copy;
-      const next = new Date(from);
-      next.setDate(next.getDate() + 1);
-      const to = next.toISOString().slice(0, 10);
-      if (copyDay(from, to)) {
-        showUndoToast('Day copied');
-        renderWeek();
-      }
-    });
-  });
-}
-
 
 // Basic Cook mode (P2 #14 foundation): step-by-step, Escape to close, arrow keys, simple timer
 function openCookMode(meal) {
+  document.getElementById('cook-overlay')?.remove();
+  const returnFocus = document.activeElement;
   let step = 0;
-  const steps = meal.steps || ['No steps listed.'];
+  const steps = (meal.steps && meal.steps.length) ? meal.steps : ['No steps listed.'];
   const overlay = document.createElement('div');
   overlay.id = 'cook-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:#f7f4ef;z-index:1000;padding:1rem;overflow:auto;';
-  overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'cook-title');
   overlay.innerHTML = `
-    <h2>${meal.name}</h2>
+    <h2 id="cook-title">${escapeHtml(meal.name)}</h2>
     <p>Step <span id="step-num">${step + 1}</span> of ${steps.length}</p>
-    <div id="step-text" class="card" style="font-size:1.25rem;min-height:8rem;">${steps[step]}</div>
-    <div style="margin-top:1rem;">
-      <button id="prev-step">← Previous</button>
-      <button id="next-step">Next →</button>
-      <button id="start-timer">Start 5 min timer</button>
-      <span id="timer-display"></span>
+    <div id="step-text" class="card" aria-live="polite">${escapeHtml(steps[step])}</div>
+    <div class="button-row">
+      <button type="button" id="prev-step" class="secondary">← Previous</button>
+      <button type="button" id="next-step">Next →</button>
+      <button type="button" id="start-timer" class="secondary">Start 5 min timer</button>
+      <span id="timer-display" role="timer" aria-live="off"></span>
     </div>
-    <button id="close-cook" style="margin-top:1rem;">Close (Esc)</button>
+    <button type="button" id="close-cook" class="secondary">Close (Esc)</button>
   `;
   document.body.appendChild(overlay);
   // Focus trap and initial focus
@@ -1071,6 +1466,7 @@ function openCookMode(meal) {
   overlay.querySelector('#start-timer').addEventListener('click', () => {
     let secs = 5 * 60;
     const display = overlay.querySelector('#timer-display');
+    display.textContent = '5:00';
     if (timerId) clearInterval(timerId);
     timerId = setInterval(() => {
       secs--;
@@ -1078,10 +1474,13 @@ function openCookMode(meal) {
       if (secs <= 0) { clearInterval(timerId); display.textContent = 'Done!'; }
     }, 1000);
   });
+  let wakeLock = null;
   function close() {
     if (timerId) clearInterval(timerId);
     overlay.remove();
     document.removeEventListener('keydown', onKey);
+    wakeLock?.release?.().catch(() => {});
+    if (returnFocus && document.contains(returnFocus)) returnFocus.focus();
   }
   overlay.querySelector('#close-cook').addEventListener('click', close);
   function onKey(e) {
@@ -1091,14 +1490,14 @@ function openCookMode(meal) {
   }
   document.addEventListener('keydown', onKey);
   // Wake Lock attempt
-  if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => {});
+  if (navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { wakeLock = l; }).catch(() => {});
 }
 
-// PWA service worker stub
-if ('serviceWorker' in navigator) {
+
+// PWA service worker (not needed inside the native app shell)
+if ('serviceWorker' in navigator && !window.Capacitor) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
-
-// Initial render
-renderPage('today');
+// Initial render (also handles old #today/#week/#meals links)
+route();

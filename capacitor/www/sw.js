@@ -1,6 +1,6 @@
-// Improved service worker for offline (Phase F)
-const CACHE = 'larder-v3';
-const ASSETS = ['/', '/index.html', '/styles.css', '/app.js', '/ui.js', '/data.js', '/ingredients-db.js', '/tests.js', '/manifest.webmanifest'];
+// Service worker for offline use. Bump CACHE when shipping changed assets.
+const CACHE = 'larder-v5-1.1';
+const ASSETS = ['./', './index.html', './styles.css', './app.js', './ui.js', './data.js', './ingredients-db.js', './tests.js', './manifest.webmanifest'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
@@ -11,11 +11,16 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
+  const req = e.request;
+  // Only cache same-origin GETs (Cache.put throws on POST; third-party scripts stay network-only)
+  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   e.respondWith(
-    caches.match(e.request).then(r => r || fetch(e.request).then(resp => {
-      const copy = resp.clone();
-      caches.open(CACHE).then(cache => cache.put(e.request, copy));
+    caches.match(req).then(r => r || fetch(req).then(resp => {
+      if (resp.ok) {
+        const copy = resp.clone();
+        caches.open(CACHE).then(cache => cache.put(req, copy));
+      }
       return resp;
-    }).catch(() => caches.match('/index.html')))
+    }).catch(() => req.mode === 'navigate' ? caches.match('./index.html') : Response.error()))
   );
 });
