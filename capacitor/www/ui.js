@@ -695,6 +695,17 @@ function renderPantry() {
     ${expiring.length ? `<div class="card" role="alert" style="background:#fff3cd;"><strong>Expiring soon:</strong> ${expiring.map(e => e.name).join(', ')}</div>` : ''}
     ${suggestions.length ? `<div class="card"><strong>Use it up:</strong> ${suggestions.map(s => s.name).join(', ')}</div>` : ''}
     <div class="card">
+      <h3>Cook from what I have</h3>
+      <p>Select ingredients in your pantry. Meals that use them will be ranked by how many you already have.</p>
+      ${items.length ? `
+        <div id="pantry-select" style="margin:0.5rem 0;">
+          ${items.map(item => `<label style="display:inline-flex;align-items:center;margin:0.25rem 0.5rem 0.25rem 0;"><input type="checkbox" data-pantry-id="${item.id}" checked> ${item.name}</label>`).join('')}
+        </div>
+        <button id="find-meals" type="button">Find meals</button>
+        <div id="pantry-results" style="margin-top:0.75rem;"></div>
+      ` : '<p>Add items to your pantry first.</p>'}
+    </div>
+    <div class="card">
       <h3>Scan receipt</h3>
       <p>Upload a photo of a store receipt. Text is extracted on your device (never leaves the browser).</p>
       <input type="file" id="receipt-file" accept="image/*" capture="environment" style="margin-bottom:0.5rem;">
@@ -711,6 +722,45 @@ function renderPantry() {
     `).join('') : '<p class="card">Pantry is empty. Add items from the Shop list or scan a receipt.</p>'}
     <p><small>Cooking a meal can deduct ingredients (foundation ready).</small></p>
   `;
+  document.getElementById('find-meals')?.addEventListener('click', () => {
+    const selected = new Set([...el.querySelectorAll('#pantry-select input:checked')].map(cb => cb.dataset.pantryId));
+    const selectedIds = new Set((state.pantry || []).filter(p => selected.has(p.id)).map(p => normalizeIngredient(p.name).id));
+    const allMeals = getAllMeals();
+    const scored = allMeals.map(meal => {
+      const ings = meal.ingredients || [];
+      const matchCount = ings.filter(ing => selectedIds.has(normalizeIngredient(ing.name).id)).length;
+      const coverage = ings.length ? matchCount / ings.length : 0;
+      return { meal, matchCount, coverage };
+    }).filter(s => s.matchCount > 0).sort((a, b) => b.coverage - a.coverage || b.matchCount - a.matchCount).slice(0, 8);
+    const resultsEl = document.getElementById('pantry-results');
+    if (!scored.length) {
+      resultsEl.innerHTML = '<p>No meals match the selected ingredients.</p>';
+      return;
+    }
+    resultsEl.innerHTML = scored.map(s => `
+      <div class="card" style="margin-bottom:0.5rem;">
+        <strong>${s.meal.name}</strong>
+        <p style="margin:0.25rem 0;font-size:0.9rem;">Uses ${s.matchCount} of ${s.meal.ingredients.length} selected ingredients (${Math.round(s.coverage*100)}%)</p>
+        <button data-plan="${s.meal.id}" data-slot="${s.meal.slot}" style="font-size:0.85rem;">Plan for next open ${s.meal.slot}</button>
+      </div>
+    `).join('');
+    resultsEl.querySelectorAll('[data-plan]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const meal = allMeals.find(m => m.id === btn.dataset.plan);
+        if (!meal) return;
+        const today = getTodayKey();
+        const day = ensureDay(today);
+        if (!day[meal.slot]) {
+          day[meal.slot] = { mealId: meal.id, status: 'planned' };
+          saveState();
+          showUndoToast(`Planned ${meal.name} for today`);
+          renderPantry();
+        } else {
+          showUndoToast(`Today's ${meal.slot} is already filled`);
+        }
+      });
+    });
+  });
   // Wire remove
   el.querySelectorAll('[data-remove]').forEach(btn => {
     btn.addEventListener('click', () => {
