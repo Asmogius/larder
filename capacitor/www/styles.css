@@ -223,7 +223,99 @@ label { display: block; margin-bottom: 0.85rem; font-weight: 500; }
 }
 #move-hint { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
 
-/* Mobile improvements */
+.meal-line {
+  font-weight: 600;
+  padding: 0.5rem 0;
+  cursor: pointer;
+}
+.desktop-actions { margin-top: 0.4rem; }
+@media (max-width: 640px) {
+  .desktop-actions { display: none; }
+  .meal-line { font-size: 1.05rem; padding: 0.75rem 0; }
+}
+.bottom-tabs {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  z-index: 100;
+  padding: 0.35rem 0.25rem calc(0.35rem + env(safe-area-inset-bottom));
+  justify-content: space-around;
+  align-items: center;
+}
+.bottom-tabs a {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  min-width: 56px;
+  min-height: 48px;
+  border-radius: 8px;
+  padding: 0.25rem;
+}
+.bottom-tabs a[aria-current="page"] {
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+.bottom-tabs a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Bottom sheet */
+.bottom-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--card);
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -4px 24px rgba(28,25,23,0.15);
+  z-index: 200;
+  padding: 0.75rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom));
+  max-height: 70vh;
+  overflow: auto;
+  transform: translateY(100%);
+  transition: transform 0.25s ease;
+}
+.bottom-sheet:not([hidden]) {
+  transform: translateY(0);
+}
+.sheet-handle {
+  width: 40px;
+  height: 4px;
+  background: var(--border-strong);
+  border-radius: 2px;
+  margin: 0 auto 0.75rem;
+}
+#sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(28,25,23,0.4);
+  z-index: 150;
+}
+#sheet-actions button {
+  display: block;
+  width: 100%;
+  margin-bottom: 0.5rem;
+  text-align: left;
+  padding-left: 1rem;
+}
+@media (max-width: 640px) {
+  .top-nav { display: none; }
+  .bottom-tabs { display: flex; }
+  main { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
+}
+@media (min-width: 641px) {
+  .bottom-tabs, #meal-sheet, #sheet-backdrop { display: none !important; }
+}
 @media (max-width: 640px) {
   header { padding: 0.75rem 1rem; }
   main { padding: 1rem 0.75rem 5rem; }

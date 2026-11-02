@@ -31,17 +31,71 @@ function showPage(id) {
     page.hidden = false;
     page.focus();
   }
+  document.querySelectorAll('nav a').forEach(a => {
+    const href = a.getAttribute('href')?.slice(1);
+    const isCurrent = href === id || (id === 'meals' && a.dataset.tab === 'more') || (id === 'review' && a.dataset.tab === 'more');
+    if (isCurrent) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
 }
 
 // Navigation
 document.querySelectorAll('nav a').forEach(a => {
   a.addEventListener('click', e => {
     e.preventDefault();
-    const target = a.getAttribute('href').slice(1);
+    let target = a.getAttribute('href').slice(1);
+    if (target === 'settings' && a.closest('.bottom-tabs')) target = 'settings';
     showPage(target);
     renderPage(target);
   });
 });
+
+
+function openMealSheet(slot, mealName, day, dateKey, allMeals) {
+  const sheet = document.getElementById('meal-sheet');
+  const backdrop = document.getElementById('sheet-backdrop');
+  const title = document.getElementById('sheet-title');
+  const actions = document.getElementById('sheet-actions');
+  title.textContent = mealName || slot;
+  const btns = [
+    { action: 'cook', label: 'Cook' },
+    { action: 'ate', label: 'We ate this' },
+    { action: 'leftover', label: 'Leftover tomorrow' },
+    { action: 'clear', label: 'Clear' }
+  ];
+  actions.innerHTML = btns.map(b => `<button data-slot="${slot}" data-action="${b.action}">${b.label}</button>`).join('');
+  sheet.hidden = false;
+  backdrop.hidden = false;
+  actions.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.action;
+      closeMealSheet();
+      if (action === 'clear') {
+        day[slot] = null;
+        saveState();
+        renderToday();
+      } else if (action === 'ate') {
+        if (markEatenAndDeduct(dateKey, slot)) showUndoToast('Marked eaten');
+        renderToday();
+      } else if (action === 'cook') {
+        const meal = allMeals.find(m => m.id === day[slot]?.mealId);
+        if (meal) openCookMode(meal);
+      } else if (action === 'leftover') {
+        const tomorrow = new Date(dateKey);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const tomKey = tomorrow.toISOString().slice(0, 10);
+        if (planLeftover(dateKey, slot, tomKey, slot)) showUndoToast('Leftover planned');
+        renderToday();
+      }
+    });
+  });
+}
+function closeMealSheet() {
+  document.getElementById('meal-sheet').hidden = true;
+  document.getElementById('sheet-backdrop').hidden = true;
+}
+document.getElementById('sheet-close')?.addEventListener('click', closeMealSheet);
+document.getElementById('sheet-backdrop')?.addEventListener('click', closeMealSheet);
 
 function renderPage(page) {
   if (page === 'today') renderToday();
@@ -75,15 +129,15 @@ function renderToday() {
     <p>${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${state.profile.goal} · ${getHouseholdSize(state.profile)} person</p>
     <div class="card">
       <h3>Breakfast ${day.breakfast ? '' : 'OPEN'}</h3>
-      ${day.breakfast ? `<p>${allMeals.find(m => m.id === day.breakfast.mealId)?.name || 'Custom'} <button data-slot="breakfast" data-action="clear">Clear</button> <button data-slot="breakfast" data-action="ate">We ate this</button> <button data-slot="breakfast" data-action="cook">Cook</button> <button data-slot="breakfast" data-action="leftover">Leftover tomorrow</button></p>` : '<button data-slot="breakfast" data-action="add">Add breakfast</button>'}
+      ${day.breakfast ? `<p class="meal-line" data-slot="breakfast">${allMeals.find(m => m.id === day.breakfast.mealId)?.name || 'Custom'}</p><div class="desktop-actions"><button data-slot="breakfast" data-action="clear">Clear</button> <button data-slot="breakfast" data-action="ate">We ate this</button> <button data-slot="breakfast" data-action="cook">Cook</button> <button data-slot="breakfast" data-action="leftover">Leftover tomorrow</button></div>` : '<button data-slot="breakfast" data-action="add">Add breakfast</button>'}
     </div>
     <div class="card">
       <h3>Lunch ${day.lunch ? '' : 'OPEN'}</h3>
-      ${day.lunch ? `<p>${allMeals.find(m => m.id === day.lunch.mealId)?.name || 'Custom'} <button data-slot="lunch" data-action="clear">Clear</button> <button data-slot="lunch" data-action="ate">We ate this</button> <button data-slot="lunch" data-action="cook">Cook</button> <button data-slot="lunch" data-action="leftover">Leftover tomorrow</button></p>` : '<button data-slot="lunch" data-action="add">Add lunch</button>'}
+      ${day.lunch ? `<p class="meal-line" data-slot="lunch">${allMeals.find(m => m.id === day.lunch.mealId)?.name || 'Custom'}</p><div class="desktop-actions"><button data-slot="lunch" data-action="clear">Clear</button> <button data-slot="lunch" data-action="ate">We ate this</button> <button data-slot="lunch" data-action="cook">Cook</button> <button data-slot="lunch" data-action="leftover">Leftover tomorrow</button></div>` : '<button data-slot="lunch" data-action="add">Add lunch</button>'}
     </div>
     <div class="card">
       <h3>Dinner ${day.dinner ? '' : 'OPEN'}</h3>
-      ${day.dinner ? `<p>${allMeals.find(m => m.id === day.dinner.mealId)?.name || 'Custom'} <button data-slot="dinner" data-action="clear">Clear</button> <button data-slot="dinner" data-action="ate">We ate this</button> <button data-slot="dinner" data-action="cook">Cook</button> <button data-slot="dinner" data-action="leftover">Leftover tomorrow</button></p>` : '<button data-slot="dinner" data-action="add">Add dinner</button>'}
+      ${day.dinner ? `<p class="meal-line" data-slot="dinner">${allMeals.find(m => m.id === day.dinner.mealId)?.name || 'Custom'}</p><div class="desktop-actions"><button data-slot="dinner" data-action="clear">Clear</button> <button data-slot="dinner" data-action="ate">We ate this</button> <button data-slot="dinner" data-action="cook">Cook</button> <button data-slot="dinner" data-action="leftover">Leftover tomorrow</button></div>` : '<button data-slot="dinner" data-action="add">Add dinner</button>'}
     </div>
     <aside class="card">
       <h3>If this day stands</h3>
@@ -92,6 +146,14 @@ function renderToday() {
       <button id="suggest-btn">Suggest open meals</button>
     </aside>
   `;
+  // Mobile: tap meal name opens sheet
+  el.querySelectorAll('.meal-line').forEach(line => {
+    line.addEventListener('click', () => {
+      const slot = line.dataset.slot;
+      const meal = allMeals.find(m => m.id === day[slot]?.mealId);
+      openMealSheet(slot, meal?.name || slot, day, today, allMeals);
+    });
+  });
   // Wire buttons
   el.querySelectorAll('button[data-action]').forEach(btn => {
     btn.addEventListener('click', () => {
