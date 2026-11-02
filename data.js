@@ -306,7 +306,7 @@ export const MEALS = [
     centsPerServing: 180,
     keto: false,
     performance: false,
-    allergens: ["gluten"],
+    allergens: ["gluten", "soy"],
     ingredients: [
       { name: "noodles", qty: 2, unit: "oz", aisle: "pantry" },
       { name: "cucumber", qty: 0.5, unit: "", aisle: "produce" },
@@ -441,7 +441,7 @@ export const MEALS = [
     centsPerServing: 180,
     keto: false,
     performance: false,
-    allergens: [],
+    allergens: ["dairy"],
     ingredients: [{'name': 'rolled oats', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'milk', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'banana', 'qty': 1, 'unit': '', 'aisle': 'pantry'}],
     steps: ["Prepare ingredients.", "Combine and cook as needed.", "Serve."],
     protein: 15, carbs: 30, fat: 8, fiber: 4, calcium: 80, iron: 2, potassium: 300, vitaminD: 0, sodium: 250
@@ -458,7 +458,7 @@ export const MEALS = [
     centsPerServing: 180,
     keto: false,
     performance: false,
-    allergens: [],
+    allergens: ["eggs"],
     ingredients: [{'name': 'eggs', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'baby spinach', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'onion', 'qty': 1, 'unit': '', 'aisle': 'pantry'}],
     steps: ["Prepare ingredients.", "Combine and cook as needed.", "Serve."],
     protein: 15, carbs: 30, fat: 8, fiber: 4, calcium: 80, iron: 2, potassium: 300, vitaminD: 0, sodium: 250
@@ -475,7 +475,7 @@ export const MEALS = [
     centsPerServing: 180,
     keto: false,
     performance: false,
-    allergens: [],
+    allergens: ["gluten"],
     ingredients: [{'name': 'flour tortilla', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'turkey', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'lettuce', 'qty': 1, 'unit': '', 'aisle': 'pantry'}],
     steps: ["Prepare ingredients.", "Combine and cook as needed.", "Serve."],
     protein: 15, carbs: 30, fat: 8, fiber: 4, calcium: 80, iron: 2, potassium: 300, vitaminD: 0, sodium: 250
@@ -509,7 +509,7 @@ export const MEALS = [
     centsPerServing: 180,
     keto: false,
     performance: false,
-    allergens: [],
+    allergens: ["gluten", "soy"],
     ingredients: [{'name': 'broccoli', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'carrot', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'soy sauce', 'qty': 1, 'unit': '', 'aisle': 'pantry'}],
     steps: ["Prepare ingredients.", "Combine and cook as needed.", "Serve."],
     protein: 15, carbs: 30, fat: 8, fiber: 4, calcium: 80, iron: 2, potassium: 300, vitaminD: 0, sodium: 250
@@ -543,7 +543,7 @@ export const MEALS = [
     centsPerServing: 180,
     keto: false,
     performance: false,
-    allergens: [],
+    allergens: ["dairy"],
     ingredients: [{'name': 'banana', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'baby spinach', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'milk', 'qty': 1, 'unit': '', 'aisle': 'pantry'}],
     steps: ["Prepare ingredients.", "Combine and cook as needed.", "Serve."],
     protein: 15, carbs: 30, fat: 8, fiber: 4, calcium: 80, iron: 2, potassium: 300, vitaminD: 0, sodium: 250
@@ -594,7 +594,7 @@ export const MEALS = [
     centsPerServing: 180,
     keto: false,
     performance: false,
-    allergens: [],
+    allergens: ["dairy", "gluten"],
     ingredients: [{'name': 'plain Greek yogurt', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'granola', 'qty': 1, 'unit': '', 'aisle': 'pantry'}, {'name': 'mixed berries', 'qty': 1, 'unit': '', 'aisle': 'pantry'}],
     steps: ["Prepare ingredients.", "Combine and cook as needed.", "Serve."],
     protein: 15, carbs: 30, fat: 8, fiber: 4, calcium: 80, iron: 2, potassium: 300, vitaminD: 0, sodium: 250
@@ -1540,16 +1540,18 @@ export const NUTRIENTS = {
 };
 
 export function normalizeIngredient(name) {
+  name = String(name ?? "");
   const lower = name.toLowerCase().trim();
   for (const [key, canon] of Object.entries(CANONICAL_INGREDIENTS)) {
     if (canon.aliases.some(a => a.toLowerCase() === lower) || key === lower) return canon;
   }
-  return { id: lower.replace(/\s+/g, "-"), name: name, aisle: "other", unitDim: "count", aliases: [name] };
+  return { id: lower.replace(/\s+/g, "-") || "item", name: name.trim(), aisle: "other", unitDim: "count", aliases: [name] };
 }
 
 export function computeNutritionFromIngredients(ingredients, servings = 1) {
   const totals = { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 };
-  ingredients.forEach(ing => {
+  (ingredients || []).forEach(ing => {
+    if (!ing || !ing.name) return;
     const canon = normalizeIngredient(ing.name);
     const nut = NUTRIENTS[canon.id];
     if (nut) {
@@ -1565,6 +1567,6 @@ export function computeNutritionFromIngredients(ingredients, servings = 1) {
       totals.fiber += (nut.fiber || 0) * factor;
     }
   });
-  Object.keys(totals).forEach(k => totals[k] = Math.round(totals[k] / servings));
+  Object.keys(totals).forEach(k => totals[k] = Math.round(totals[k] / (servings > 0 ? servings : 1)));
   return totals;
 }

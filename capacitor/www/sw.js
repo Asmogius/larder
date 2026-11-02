@@ -1,6 +1,6 @@
 // Service worker for offline use. Bump CACHE when shipping changed assets.
-const CACHE = 'larder-v5-1.1';
-const ASSETS = ['./', './index.html', './styles.css', './app.js', './ui.js', './data.js', './ingredients-db.js', './tests.js', './manifest.webmanifest'];
+const CACHE = 'larder-v6-1.2';
+const ASSETS = ['./', './index.html', './styles.css', './app.js', './ui.js', './data.js', './ingredients-db.js', './tests.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));

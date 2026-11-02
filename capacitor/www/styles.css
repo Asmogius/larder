@@ -1,7 +1,7 @@
 /* Larder — Show-ready editorial UI */
 :root {
   --ink: #1c1917;
-  --muted: #78716c;
+  --muted: #625b56; /* darkened from #78716c to meet 4.5:1 on the surface color */
   --surface: #f7f5f2;
   --card: #ffffff;
   --border: #e7e5e4;
@@ -404,3 +404,15 @@ body.sheet-open { overflow: hidden; }
   #meal-sheet { left: 50%; right: auto; width: min(520px, 92vw); bottom: auto; top: 50%; transform: translate(-50%, -50%); border-radius: 18px; max-height: 85vh; }
   #meal-sheet .sheet-handle { display: none; }
 }
+
+/* v1.2: tap targets, pantry edit, allergens */
+.chip, .segmented button, .toast .toast-undo { min-height: 44px; }
+@media (pointer: coarse) { button.small, .week-actions button { min-height: 44px; } }
+.pantry-edit { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; margin-top: 0.5rem; }
+.pantry-edit label { margin: 0; font-size: 0.85rem; }
+.pantry-edit input { width: 9rem; }
+.pantry-edit button { width: auto !important; margin: 0 !important; }
+fieldset.allergens { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 0.9rem; margin: 0 0 1rem; display: flex; flex-wrap: wrap; gap: 0 1rem; }
+fieldset.allergens legend { font-weight: 600; padding: 0 0.3rem; }
+fieldset.allergens > label:not(.check) { flex-basis: 100%; margin-top: 0.3rem; }
+.mini b, .slot-label, .month-dow, .aisle-head { color: var(--muted); }

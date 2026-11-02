@@ -8,7 +8,8 @@ import {
   getAllMeals, findMeal, ensureDay, setSlot, swapSlots, getExpiringSoon, suggestUseItUp, markEatenAndDeduct, planLeftover,
   exportData, importData, resetData, copyDay, pushUndo, popUndo, computeDailyNutrition, getTargets, getHouseholdSize,
   dateKey, parseDateKey, addDays, weekStartOf, weekDays, SLOTS, subtractPantry, getRecipeSource, isFavorite, toggleFavorite,
-  updateCustomMeal, deleteCustomMeal, restoreCustomMeal, parseIngredientLine, smartNumber, formatQuantity
+  updateCustomMeal, deleteCustomMeal, restoreCustomMeal, parseIngredientLine, smartNumber, formatQuantity,
+  onSaveError, loadProblem, normalizeAllergen
 } from './app.js';
 import { searchIngredients, estimateFromDb } from './ingredients-db.js';
 import { normalizeIngredient, computeNutritionFromIngredients } from './data.js';
@@ -31,7 +32,7 @@ function allergenHits(meal) {
   return (state.profile.allergens || []).filter(a => (meal.allergens || []).includes(a));
 }
 function mealNutrition(meal) {
-  const nut = meal.protein != null ? meal : computeNutritionFromIngredients(meal.ingredients || [], meal.servings || 1);
+  const nut = (meal.protein != null || meal.calories) ? meal : computeNutritionFromIngredients(meal.ingredients || [], meal.servings || 1);
   const calories = nut.calories || Math.round((nut.protein || 0) * 4 + (nut.carbs || 0) * 4 + (nut.fat || 0) * 9);
   return { calories, protein: nut.protein || 0, carbs: nut.carbs || 0, fat: nut.fat || 0, fiber: nut.fiber || 0 };
 }
@@ -89,7 +90,8 @@ let currentPage = 'planner';
 let currentParam = null;
 
 function parseHash() {
-  let h = decodeURIComponent(location.hash.slice(1) || '');
+  let h = location.hash.slice(1) || '';
+  try { h = decodeURIComponent(h); } catch { /* malformed escape: use raw */ }
   let param = null;
   if (h.startsWith('recipe/')) { param = h.slice(7); h = 'recipes'; }
   const page = ROUTE_ALIASES[h] || (PAGES.includes(h) ? h : 'planner');
@@ -99,6 +101,7 @@ function route() {
   const { page, param, redirected } = parseHash();
   if (redirected) history.replaceState(null, '', '#' + page);
   const changed = page !== currentPage || param !== currentParam;
+  if (changed) editingId = null;
   currentPage = page; currentParam = param;
   closeSheet(true);
   showPage(page, changed);
@@ -154,7 +157,16 @@ function closeSheet(silent) {
 document.getElementById('sheet-close')?.addEventListener('click', () => closeSheet());
 document.getElementById('sheet-backdrop')?.addEventListener('click', () => closeSheet());
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && !document.getElementById('meal-sheet').hidden) closeSheet();
+  const sheet = document.getElementById('meal-sheet');
+  if (sheet.hidden || document.getElementById('cook-overlay')) return;
+  if (e.key === 'Escape') { closeSheet(); return; }
+  if (e.key === 'Tab') {
+    const f = [...sheet.querySelectorAll('button, input, select, textarea, a[href]')].filter(x => !x.disabled && x.offsetParent !== null);
+    if (!f.length) return;
+    if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+    else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+    else if (!sheet.contains(document.activeElement)) { e.preventDefault(); f[0].focus(); }
+  }
 });
 
 /* ---------- planner ---------- */
@@ -261,7 +273,7 @@ function renderPlanner() {
         <span class="mini-list">${lines}</span></button>`);
     }
     const sel = monthSelected;
-    body = `<div class="month-grid" role="grid" aria-label="${rangeLabel}">
+    body = `<div class="month-grid" role="group" aria-label="${rangeLabel}">
         ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => `<div class="month-dow" aria-hidden="true">${d}</div>`).join('')}
         ${cells.join('')}</div>
       ${sel ? `<div class="week-day expanded-day${sel === today ? ' is-today' : ''}" data-date="${sel}" id="expanded-day">
@@ -444,9 +456,10 @@ function openSlotSheet(date, slot) {
       const act = btn.dataset.act;
       if (act === 'choose') return openRecipePicker(date, slot);
       if (act === 'servings') {
-        const s = Number(actions.querySelector('#sheet-servings').value);
+        const s = Math.round(Number(actions.querySelector('#sheet-servings').value) * 4) / 4;
         closeSheet();
-        return planChange('servings', () => { if (s > 0) entry.servings = s; else delete entry.servings; }, 'Servings updated');
+        return planChange('servings', () => {
+        if (s > 0 && s <= 99) entry.servings = s; else delete entry.servings; }, 'Servings updated');
       }
       closeSheet();
       if (act === 'swap') {
@@ -478,12 +491,13 @@ function openRecipePicker(date, slot) {
       const term = q.value.trim().toLowerCase();
       const all = getAllMeals().filter(m => (allBox.checked || term || m.slot === slot) && recipeMatches(m, term));
       all.sort((a, b) => (b.slot === slot) - (a.slot === slot) || isFavorite(b.id) - isFavorite(a.id) || a.name.localeCompare(b.name));
+      const more = all.length > 80 ? `<p class="muted small-text" role="listitem">Showing 80 of ${all.length}. Search to narrow it down.</p>` : '';
       list.innerHTML = all.slice(0, 80).map(m => {
         const warn = allergenHits(m);
         return `<button type="button" role="listitem" class="picker-item" data-pick="${escapeHtml(m.id)}">
           <span>${isFavorite(m.id) ? '★ ' : ''}${escapeHtml(m.name)}</span>
           <small>${cap(m.slot)}${m.totalMin ? ` · ${m.totalMin} min` : ''} · ${SOURCE_LABEL[getRecipeSource(m)]}${warn.length ? ` · ⚠ ${escapeHtml(warn.join(', '))}` : ''}</small></button>`;
-      }).join('') || '<p class="empty"><strong>No recipes match</strong>Try another search.</p>';
+      }).join('') + more || '<p class="empty"><strong>No recipes match</strong>Try another search.</p>';
       list.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () => {
         const m = findMeal(b.dataset.pick);
         closeSheet();
@@ -562,7 +576,7 @@ function renderShop() {
   }));
   el.querySelectorAll('[data-add-pantry]').forEach(btn => btn.addEventListener('click', () => {
     const item = need[Number(btn.dataset.addPantry)];
-    const entry = addToPantry({ name: item.canon.name, qty: item.qty, unit: item.unit, location: item.aisle });
+    const entry = addToPantry({ name: item.canon.name, qty: Math.round(item.qty * 100) / 100, unit: item.unit, location: item.aisle });
     showUndoToast(`${item.canon.name} added to pantry`, () => {
       state.pantry = state.pantry.filter(p => p.id !== entry.id); saveState(); rerender();
     });
@@ -772,8 +786,8 @@ async function runImport(el) {
   resultEl.innerHTML = '<p>Importing…</p>';
   let parsed;
   try { parsed = await parseRecipeImport(text); } catch { parsed = null; }
-  if (!parsed || !parsed.name) {
-    resultEl.innerHTML = '<p>Could not extract a recipe. Try pasting the full recipe text, or a different site.</p>';
+  if (!parsed || !parsed.name || (!parsed.ingredients.length && !(parsed.steps || []).length)) {
+    resultEl.innerHTML = `<p role="alert">Could not find a recipe in that. ${escapeHtml(parsed?.blurb && /URL fetch/.test(parsed.blurb) ? parsed.blurb : 'Try pasting the full recipe text (with an “Ingredients” heading), or the page HTML.')}</p>`;
     return;
   }
   const sourceUrl = /^https?:\/\//i.test(text) ? text : undefined;
@@ -796,7 +810,7 @@ async function runImport(el) {
     const servings = Number(resultEl.querySelector('#imp-servings').value) || 2;
     const blurb = resultEl.querySelector('#imp-blurb').value.trim();
     const est = estimateFromDb(parsed.ingredients);
-    for (const raw of est.unmatched) {
+    for (const raw of est.unmatched.slice(0, 5)) {
       const picks = searchIngredients(raw.split(' ').pop(), 5);
       if (!picks.length) continue;
       const choice = prompt(`No nutrition match for "${raw}". Pick a number, or Cancel to keep as is:\n` + picks.map((p, i) => `${i + 1}. ${p.name}`).join('\n'));
@@ -853,7 +867,7 @@ function renderRecipeDetail(id) {
         <button type="button" class="secondary fav-btn" id="fav-btn" aria-pressed="${fav}" aria-label="${fav ? 'Remove from favorites' : 'Add to favorites'}">${fav ? '★ Favorite' : '☆ Favorite'}</button>
       </div>
       ${meal.blurb ? `<p class="blurb">${escapeHtml(meal.blurb)}</p>` : ''}
-      ${meal.sourceUrl ? `<p class="muted small-text">Source: <a href="${escapeHtml(meal.sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(meal.sourceUrl)}</a></p>` : ''}
+      ${/^https?:\/\//i.test(meal.sourceUrl || '') ? `<p class="muted small-text">Source: <a href="${escapeHtml(meal.sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(meal.sourceUrl)}</a></p>` : ''}
       <dl class="facts">
         <div><dt>Prep</dt><dd>${meal.prepMin ? meal.prepMin + ' min' : '—'}</dd></div>
         <div><dt>Total</dt><dd>${meal.totalMin ? meal.totalMin + ' min' : '—'}</dd></div>
@@ -892,7 +906,7 @@ function renderRecipeDetail(id) {
     </div>`;
   const input = el.querySelector('#serv-input');
   const drawIngredients = () => {
-    const s = Math.max(1, Number(input.value) || base);
+    const s = Math.min(99, Math.max(1, Number(input.value) || base));
     detailServings[id] = s;
     const scale = s / base;
     el.querySelector('#ing-list').innerHTML = (meal.ingredients || []).map(i =>
@@ -915,7 +929,7 @@ function renderRecipeDetail(id) {
     const d = el.querySelector('#plan-date').value;
     const s = el.querySelector('#plan-slot').value;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { el.querySelector('#plan-note').textContent = 'Pick a day first.'; return; }
-    const chosen = Number(input.value) || base;
+    const chosen = Math.min(99, Math.max(1, Number(input.value) || base));
     planChange('plan', () => {
       setSlot(d, s, id);
       if (chosen !== base) state.days[d][s].servings = chosen;
@@ -956,7 +970,10 @@ function renderSettings() {
           <option value="keto" ${state.profile.goal === 'keto' ? 'selected' : ''}>Keto</option>
         </select>
       </label>
-      <label>Allergens (comma-separated) <input name="allergens" value="${escapeHtml((state.profile.allergens || []).join(', '))}"></label>
+      <fieldset class="allergens"><legend>Avoid (allergens)</legend>
+        ${['dairy', 'gluten', 'eggs', 'nuts', 'soy', 'fish', 'shellfish'].map(a => `<label class="check"><input type="checkbox" name="allergen" value="${a}" ${(state.profile.allergens || []).includes(a) ? 'checked' : ''}> ${cap(a)}</label>`).join('')}
+        <label>Other (comma-separated) <input name="allergens" value="${escapeHtml((state.profile.allergens || []).filter(a => !['dairy', 'gluten', 'eggs', 'nuts', 'soy', 'fish', 'shellfish'].includes(a)).join(', '))}"></label>
+      </fieldset>
       <button type="submit">Save goal & allergens</button>
     </form>
     <div class="card">
@@ -1010,6 +1027,7 @@ function renderSettings() {
     <div class="card">
       <h3>Data</h3>
       <button id="export-btn" type="button">Export JSON backup</button>
+      <button id="copy-backup-btn" type="button" class="secondary">Copy backup to clipboard</button>
       <button id="import-btn" type="button" class="secondary">Import JSON</button>
       <input type="file" id="import-file" accept=".json" hidden>
       <button id="reset-btn" class="danger">Reset all data</button>
@@ -1020,7 +1038,7 @@ function renderSettings() {
   document.getElementById('settings-form').addEventListener('submit', e => {
     e.preventDefault();
     const form = new FormData(e.target);
-    const allergens = (form.get('allergens') || '').split(',').map(s => s.trim()).filter(Boolean);
+    const allergens = [...new Set([...form.getAll('allergen'), ...String(form.get('allergens') || '').split(',')].map(normalizeAllergen).filter(Boolean))];
     state.profile.goal = form.get('goal');
     state.profile.allergens = allergens;
     state.profile.householdSize = (state.profile.members || []).length || 1;
@@ -1057,10 +1075,16 @@ function renderSettings() {
   el.querySelectorAll('[data-remove]').forEach(btn => {
     btn.addEventListener('click', () => {
       const i = Number(btn.dataset.remove);
-      state.profile.members.splice(i, 1);
+      if (state.profile.members.length <= 1) return;
+      const [removed] = state.profile.members.splice(i, 1);
       state.profile.householdSize = state.profile.members.length || 1;
       saveState();
       renderSettings();
+      showUndoToast(`Removed ${removed.name || 'person'}`, () => {
+        state.profile.members.splice(i, 0, removed);
+        state.profile.householdSize = state.profile.members.length;
+        saveState(); rerender();
+      });
     });
   });
   document.getElementById('add-member')?.addEventListener('click', () => {
@@ -1080,7 +1104,16 @@ function renderSettings() {
     saveState();
     renderSettings();
   });
-  document.getElementById('export-btn')?.addEventListener('click', () => {
+  document.getElementById('copy-backup-btn')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(exportData()); showUndoToast('Backup copied — paste it somewhere safe'); }
+    catch { showUndoToast('Could not access the clipboard'); }
+  });
+  document.getElementById('export-btn')?.addEventListener('click', async () => {
+    // Android WebView can't download blob: URLs, so share the file there instead
+    if (window.Capacitor && navigator.canShare) {
+      const f = new File([exportData()], 'larder-backup.json', { type: 'application/json' });
+      if (navigator.canShare({ files: [f] })) { navigator.share({ files: [f], title: 'Larder backup' }).catch(() => {}); return; }
+    }
     const blob = new Blob([exportData()], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -1107,6 +1140,11 @@ function renderSettings() {
   });
 }
 
+function decodeEntities(str) {
+  const t = document.createElement('textarea');
+  t.innerHTML = String(str ?? '');
+  return t.value;
+}
 async function parseRecipeImport(input) {
   let html = '';
   let name = '';
@@ -1151,17 +1189,17 @@ async function parseRecipeImport(input) {
       if (recipe) {
         name = String(recipe.name || name).trim();
         blurb = String(recipe.description || blurb).replace(/<[^>]+>/g, '').trim();
-        servings = parseInt([].concat(recipe.recipeYield || [])[0]) || servings;
+        servings = parseInt(String([].concat(recipe.recipeYield || [])[0] ?? '').match(/\d+/)?.[0]) || servings;
         const ings = recipe.recipeIngredient || recipe.ingredients || [];
-        ingredients = ings.map(parseIngredientLine).filter(i => i.name);
+        ingredients = [].concat(ings).map(x => parseIngredientLine(decodeEntities(x))).filter(i => i.name);
         const instr = recipe.recipeInstructions || recipe.instructions || [];
         steps = (Array.isArray(instr) ? instr : [instr]).flatMap(s => {
           if (typeof s === 'string') return [s];
           if (s.itemListElement) return s.itemListElement.map(i => i.text || i).filter(x => typeof x === 'string');
           if (s.text) return [s.text];
-          if (s.itemListElement) return s.itemListElement.map(i => i.text || i).filter(Boolean);
           return [];
-        }).map(s => String(s).trim()).filter(Boolean);
+        }).map(s => decodeEntities(String(s).replace(/<[^>]+>/g, ' ')).trim()).filter(Boolean);
+        name = decodeEntities(name); blurb = decodeEntities(blurb);
         if (name && ingredients.length) return { name, ingredients, steps, servings, blurb };
       }
     } catch (e) { /* continue */ }
@@ -1169,17 +1207,17 @@ async function parseRecipeImport(input) {
 
   // 2. Microdata fallback
   const nameMatch = html.match(/itemprop=["']name["'][^>]*>([^<]+)/i) || html.match(/<h1[^>]*>([^<]+)/i);
-  if (nameMatch) name = nameMatch[1].trim();
+  if (nameMatch) name = decodeEntities(nameMatch[1].trim());
   const ingMatches = [...html.matchAll(/itemprop=["']recipeIngredient["'][^>]*>([^<]+)/gi)];
   if (ingMatches.length) {
-    ingredients = ingMatches.map(m => parseIngredientLine(m[1])).filter(i => i.name);
+    ingredients = ingMatches.map(m => parseIngredientLine(decodeEntities(m[1]))).filter(i => i.name);
   }
   const stepMatches = [...html.matchAll(/itemprop=["']recipeInstructions["'][^>]*>([^<]+)/gi)];
-  if (stepMatches.length) steps = stepMatches.map(m => m[1].trim()).filter(Boolean);
+  if (stepMatches.length) steps = stepMatches.map(m => decodeEntities(m[1].trim())).filter(Boolean);
 
   // 3. Plain text / paste heuristics
   if (!ingredients.length) {
-    const lines = html.split(/\n|<br\s*\/?>/i).map(l => l.replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+    const lines = html.replace(/<(script|style)[\s\S]*?<\/\1>/gi, '').split(/\n|<br\s*\/?>|<\/(?:p|li|div|h\d)>/i).map(l => decodeEntities(l.replace(/<[^>]+>/g, '')).trim()).filter(Boolean);
     if (!name && lines[0]) name = lines[0];
     let mode = 'none';
     for (const line of lines) {
@@ -1240,9 +1278,13 @@ function renderPantry() {
     </div>
     ${items.length ? items.map(item => `
       <div class="card">
-        <strong>${escapeHtml(item.name)}</strong> · ${escapeHtml(smartNumber(item.qty || 0))} ${escapeHtml(item.unit || '')}
-        <br><small>Location: ${escapeHtml(item.location || 'pantry')} · Added ${new Date(item.added).toLocaleDateString()}${item.expiry ? ` · Expires ${/^\d{4}-\d{2}-\d{2}$/.test(item.expiry) ? parseDateKey(item.expiry).toLocaleDateString() : new Date(item.expiry).toLocaleDateString()}` : ''}</small>
-        <button type="button" class="secondary small" data-remove="${item.id}" aria-label="Remove ${escapeHtml(item.name)}">Remove</button>
+        <strong>${escapeHtml(item.name)}</strong> · ${escapeHtml(smartNumber(item.qty || 0))} ${escapeHtml(item.unit || '')}${item.expiry && String(item.expiry).slice(0, 10) < getTodayKey() ? ' <span class="badge warn">Expired</span>' : ''}
+        <br><small>Location: ${escapeHtml(item.location || 'pantry')}${item.added && !isNaN(new Date(item.added)) ? ` · Added ${new Date(item.added).toLocaleDateString()}` : ''}${item.expiry ? ` · Expires ${escapeHtml(fmtDay(String(item.expiry).slice(0, 10), { month: 'short', day: 'numeric', year: 'numeric' }))}` : ''}</small>
+        <div class="pantry-edit" data-edit="${escapeHtml(item.id)}">
+          <label>Qty <input type="number" min="0" step="any" inputmode="decimal" data-field="qty" value="${escapeHtml(Math.round((item.qty || 0) * 100) / 100)}"></label>
+          <label>Expires <input type="date" data-field="expiry" value="${escapeHtml(item.expiry ? String(item.expiry).slice(0, 10) : '')}"></label>
+          <button type="button" class="secondary small" data-remove="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.name)}">Remove</button>
+        </div>
       </div>
     `).join('') : '<div class="empty"><strong>Pantry is empty</strong>Add an item above, from Shop, or scan a receipt.</div>'}
     <p><small>Marking a meal “We ate this” deducts its ingredients from the pantry.</small></p>
@@ -1295,6 +1337,18 @@ function renderPantry() {
       });
     });
   });
+  el.querySelectorAll('.pantry-edit input').forEach(inp => inp.addEventListener('change', () => {
+    const item = state.pantry.find(p => p.id === inp.closest('.pantry-edit').dataset.edit);
+    if (!item) return;
+    if (inp.dataset.field === 'qty') {
+      const v = Number(inp.value);
+      if (!(v >= 0) || inp.value === '') { inp.value = item.qty; return; }
+      item.qty = v;
+    } else item.expiry = inp.value || null;
+    saveState();
+    showUndoToast(`${item.name} updated`);
+    renderPantry();
+  }));
   // Wire remove
   el.querySelectorAll('[data-remove]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1318,8 +1372,11 @@ function renderPantry() {
     const file = fileInput.files[0];
     if (!file) return;
     if (typeof Tesseract === 'undefined') {
-      statusEl.textContent = 'Receipt scanning needs a connection the first time (the OCR library could not load).';
-      return;
+      statusEl.textContent = 'Loading the on-device text reader…';
+      try { await loadTesseract(); } catch {
+        statusEl.textContent = 'Receipt scanning needs a connection the first time (the OCR library could not load).';
+        return;
+      }
     }
     statusEl.textContent = 'Scanning receipt on device…';
     scanBtn.disabled = true;
@@ -1357,6 +1414,18 @@ function renderPantry() {
     }
     scanBtn.disabled = false;
   });
+}
+
+let tesseractPromise = null;
+function loadTesseract() {
+  if (!tesseractPromise) tesseractPromise = new Promise((resolve, reject) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    sc.onload = resolve;
+    sc.onerror = () => { tesseractPromise = null; sc.remove(); reject(new Error('load failed')); };
+    document.head.appendChild(sc);
+  });
+  return tesseractPromise;
 }
 
 // Simple receipt parser: look for lines that look like food items
@@ -1420,8 +1489,11 @@ function renderReview() {
 
 
 // Basic Cook mode (P2 #14 foundation): step-by-step, Escape to close, arrow keys, simple timer
+let closeActiveCook = null;
 function openCookMode(meal) {
-  document.getElementById('cook-overlay')?.remove();
+  if (!meal) return;
+  closeActiveCook?.();
+  closeSheet(true);
   const returnFocus = document.activeElement;
   let step = 0;
   const steps = (meal.steps && meal.steps.length) ? meal.steps : ['No steps listed.'];
@@ -1476,6 +1548,7 @@ function openCookMode(meal) {
   });
   let wakeLock = null;
   function close() {
+    closeActiveCook = null;
     if (timerId) clearInterval(timerId);
     overlay.remove();
     document.removeEventListener('keydown', onKey);
@@ -1484,11 +1557,12 @@ function openCookMode(meal) {
   }
   overlay.querySelector('#close-cook').addEventListener('click', close);
   function onKey(e) {
-    if (e.key === 'Escape') close();
+    if (e.key === 'Escape') { e.stopImmediatePropagation(); close(); }
     if (e.key === 'ArrowRight' && step < steps.length - 1) { step++; updateStep(); }
     if (e.key === 'ArrowLeft' && step > 0) { step--; updateStep(); }
   }
   document.addEventListener('keydown', onKey);
+  closeActiveCook = close;
   // Wake Lock attempt
   if (navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { wakeLock = l; }).catch(() => {});
 }
@@ -1499,5 +1573,8 @@ if ('serviceWorker' in navigator && !window.Capacitor) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
+onSaveError(() => showUndoToast('Could not save — device storage is full or disabled. Export a backup.'));
 // Initial render (also handles old #today/#week/#meals links)
 route();
+if (loadProblem === 'corrupt') showUndoToast('Saved data was unreadable; a copy was kept and the app started fresh.');
+else if (loadProblem) showUndoToast('Storage is unavailable; changes will not be saved.');
