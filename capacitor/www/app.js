@@ -58,11 +58,13 @@ function smartNumber(n) {
   return String(rounded);
 }
 
-export function computeDailyNutrition(plannedMeals, householdSize = 1) {
+export function computeDailyNutrition(plannedMeals, householdSize = 1, plannedEntries = []) {
   const size = typeof householdSize === 'object' ? getHouseholdSize(householdSize) : householdSize;
   const totals = { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 };
-  plannedMeals.forEach(meal => {
-    const scale = size / (meal.servings || 1);
+  plannedMeals.forEach((meal, i) => {
+    const entry = plannedEntries[i] || {};
+    const servings = entry.servings || size;
+    const scale = servings / (meal.servings || 1);
     const nut = meal.protein != null ? meal : computeNutritionFromIngredients(meal.ingredients || [], meal.servings || 1);
     totals.calories += (nut.calories || nut.protein * 4 + nut.carbs * 4 + nut.fat * 9 || 0) * scale;
     totals.protein += (nut.protein || 0) * scale;
@@ -391,14 +393,14 @@ export function resetData() {
 }
 
 export function planLeftover(date, slot) {
-  // Simple leftover planning stub
   const day = state.days[date];
   if (!day || !day[slot]) return false;
-  const tomorrow = new Date(date);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  // Parse as local date to avoid timezone shift
+  const [y, m, d] = date.split('-').map(Number);
+  const tomorrow = new Date(y, m - 1, d + 1);
   const tomorrowKey = tomorrow.toISOString().slice(0, 10);
   if (!state.days[tomorrowKey]) state.days[tomorrowKey] = { breakfast: null, lunch: null, dinner: null };
-  state.days[tomorrowKey][slot] = { ...day[slot], status: "planned" };
+  state.days[tomorrowKey][slot] = { ...day[slot], status: "planned", leftover: true };
   saveState();
   return true;
 }

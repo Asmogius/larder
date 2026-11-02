@@ -93,7 +93,7 @@ function openMealSheet(slot, mealName, day, dateKey, allMeals) {
         const tomorrow = new Date(dateKey);
         tomorrow.setDate(tomorrow.getDate() + 1);
         const tomKey = tomorrow.toISOString().slice(0, 10);
-        if (planLeftover(dateKey, slot, tomKey, slot)) showUndoToast('Leftover planned');
+        if (planLeftover(dateKey, slot)) showUndoToast('Leftover planned');
         renderToday();
       }
     });
@@ -131,7 +131,7 @@ function renderToday() {
   const day = ensureDay(today);
   const planned = [day.breakfast, day.lunch, day.dinner].filter(Boolean);
   const allMeals = getAllMeals();
-  const nut = computeDailyNutrition(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), getHouseholdSize(state.profile));
+  const nut = computeDailyNutrition(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), getHouseholdSize(state.profile), planned);
   const targets = getTargets(state.profile);
   const cost = computeCost(planned.map(p => allMeals.find(m => m.id === p?.mealId)).filter(Boolean), getHouseholdSize(state.profile), state.prices || {});
   el.innerHTML = `
@@ -191,7 +191,7 @@ function renderToday() {
         const tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
         const tomKey = tomorrow.toISOString().slice(0, 10);
-        if (planLeftover(today, slot, tomKey, slot)) {
+        if (planLeftover(today, slot)) {
           showUndoToast('Leftover planned for tomorrow');
         }
         renderToday();
