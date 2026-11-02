@@ -57,20 +57,29 @@ function openMealSheet(slot, mealName, day, dateKey, allMeals) {
   const title = document.getElementById('sheet-title');
   const actions = document.getElementById('sheet-actions');
   title.textContent = mealName || slot;
-  const btns = [
-    { action: 'cook', label: 'Cook' },
-    { action: 'ate', label: 'We ate this' },
-    { action: 'leftover', label: 'Leftover tomorrow' },
-    { action: 'clear', label: 'Clear' }
-  ];
-  actions.innerHTML = btns.map(b => `<button data-slot="${slot}" data-action="${b.action}">${b.label}</button>`).join('');
+  const currentServings = day[slot]?.servings || '';
+  actions.innerHTML = `
+    <label>Servings for this meal <input id="sheet-servings" type="number" min="1" value="${currentServings}" placeholder="default" style="max-width:100px;"></label>
+    <button data-slot="${slot}" data-action="set-servings">Set servings</button>
+    <button data-slot="${slot}" data-action="cook">Cook</button>
+    <button data-slot="${slot}" data-action="ate">We ate this</button>
+    <button data-slot="${slot}" data-action="leftover">Leftover tomorrow</button>
+    <button data-slot="${slot}" data-action="clear">Clear</button>
+  `;
   sheet.hidden = false;
   backdrop.hidden = false;
   actions.querySelectorAll('button').forEach(btn => {
     btn.addEventListener('click', () => {
       const action = btn.dataset.action;
       closeMealSheet();
-      if (action === 'clear') {
+      if (action === 'set-servings') {
+        const s = Number(document.getElementById('sheet-servings')?.value);
+        if (s > 0) day[slot].servings = s;
+        else delete day[slot].servings;
+        saveState();
+        showUndoToast('Servings updated');
+        renderToday();
+      } else if (action === 'clear') {
         day[slot] = null;
         saveState();
         renderToday();
@@ -143,7 +152,7 @@ function renderToday() {
       <h3>If this day stands</h3>
       <p>Calories ${nut.calories} / ${targets.calories} · Protein ${nut.protein}g / ${targets.protein}g · Carbs ${nut.carbs}g / ${targets.carbs}g · Fat ${nut.fat}g / ${targets.fat}g</p>
       <p>Cost ${cost.total.toFixed(2)} ${cost.label}</p>
-      <button id="suggest-btn">Suggest open meals</button>
+      <button id="suggest-btn">Suggest open meals</button>${!planned.length ? '<p class="card" style="margin-top:1rem;">No meals planned yet. Use Suggest or add one above.</p>' : ''}
     </aside>
   `;
   // Mobile: tap meal name opens sheet
@@ -159,13 +168,20 @@ function renderToday() {
     btn.addEventListener('click', () => {
       const slot = btn.dataset.slot;
       const action = btn.dataset.action;
-      if (action === 'clear') {
+      if (action === 'set-servings') {
+        const s = Number(document.getElementById('sheet-servings')?.value);
+        if (s > 0) day[slot].servings = s;
+        else delete day[slot].servings;
+        saveState();
+        showUndoToast('Servings updated');
+        renderToday();
+      } else if (action === 'clear') {
         day[slot] = null;
         saveState();
         renderToday();
       } else if (action === 'ate') {
         if (markEatenAndDeduct(today, slot)) {
-          alert('Marked eaten and deducted ingredients from pantry (where stocked).');
+          showUndoToast('Marked eaten and deducted from pantry');
         }
         renderToday();
       } else if (action === 'cook') {
@@ -176,7 +192,7 @@ function renderToday() {
         tomorrow.setDate(tomorrow.getDate() + 1);
         const tomKey = tomorrow.toISOString().slice(0, 10);
         if (planLeftover(today, slot, tomKey, slot)) {
-          alert('Planned as leftover for tomorrow.');
+          showUndoToast('Leftover planned for tomorrow');
         }
         renderToday();
       } else if (action === 'add') {
@@ -238,7 +254,7 @@ function renderShop() {
     btn.addEventListener('click', () => {
       const item = list[Number(btn.dataset.addPantry)];
       addToPantry({ name: item.canon.name, qty: item.qty, unit: item.unit, location: item.aisle });
-      alert(`Added ${item.display} ${item.canon.name} to pantry.`);
+      showUndoToast('Added to pantry');
     });
   });
   el.querySelectorAll('[data-price]').forEach(input => {
@@ -260,7 +276,7 @@ function renderShop() {
   document.getElementById('share-list')?.addEventListener('click', () => {
     const text = list.map(i => `${i.display} ${i.canon.name}`).join('\n');
     if (navigator.share) navigator.share({ title: 'Grocery list', text }).catch(() => {});
-    else alert('Share not supported; list copied instead.');
+    else showUndoToast('Copied (share not available)');
   });
   document.getElementById('add-manual')?.addEventListener('click', () => {
     const name = prompt('Item name:');
@@ -410,7 +426,7 @@ function renderSettings() {
     const reader = new FileReader();
     reader.onload = () => {
       if (importData(reader.result)) renderSettings();
-      else alert('Import failed');
+      else showUndoToast('Import failed');
     };
     reader.readAsText(file);
   });
@@ -423,8 +439,11 @@ function renderSettings() {
 function renderMeals() {
   const allMeals = getAllMeals();
   const el = document.getElementById('meals-content');
+  const q = (document.getElementById('meal-search')?.value || '').toLowerCase();
+  const filtered = q ? allMeals.filter(m => m.name.toLowerCase().includes(q) || (m.ingredients||[]).some(i => (i.name||'').toLowerCase().includes(q))) : allMeals;
   el.innerHTML = `
-    <p>${allMeals.length} recipes. Estimated prices shown as "est."</p>
+    <p>${filtered.length} of ${allMeals.length} recipes. Estimated prices shown as "est."</p>
+    <input id="meal-search" type="search" placeholder="Search name or ingredient" value="${q}" style="margin-bottom:0.75rem;">
     <button class="btn" id="new-recipe">Write a recipe</button>
     <button class="btn" id="import-recipe" style="margin-left:0.5rem;">Import from URL / text</button>
     <div id="recipe-form" class="card" hidden>
@@ -449,14 +468,15 @@ function renderMeals() {
     </div>
     <div id="import-panel" class="card" hidden>
       <h3>Import recipe</h3>
-      <p>Paste a recipe URL or raw text (schema.org/Recipe preferred).</p>
+      <p>Paste a recipe URL, raw text, or the page HTML (schema.org/Recipe preferred).</p>
       <textarea id="import-text" rows="4" style="width:100%;" placeholder="https://example.com/recipe or paste recipe text"></textarea>
       <button id="do-import">Import</button>
       <button type="button" id="cancel-import">Cancel</button>
       <div id="import-result"></div>
     </div>
-    <div>${allMeals.map(m => `<div class="card"><h3>${m.name}${m.custom ? ' <small>(Yours)</small>' : ''}</h3><p>${m.blurb || ''}</p><small>${m.totalMin || '?'} min · $${((m.centsPerServing || 200)/100).toFixed(2)} est. · ${m.slot}</small></div>`).join('')}</div>
+    <div>${filtered.map(m => `<div class="card"><h3>${m.name}${m.custom ? ' <small>(Yours)</small>' : ''}</h3><p>${m.blurb || ''}</p><small>${m.totalMin || '?'} min · $${((m.centsPerServing || 200)/100).toFixed(2)} est. · ${m.slot}</small></div>`).join('') || '<p class="card">No recipes match.</p>'}</div>
   `;
+  document.getElementById('meal-search')?.addEventListener('input', () => renderMeals());
   document.getElementById('new-recipe')?.addEventListener('click', () => {
     document.getElementById('recipe-form').hidden = false;
     document.getElementById('import-panel').hidden = true;
@@ -781,13 +801,29 @@ function renderReview() {
   const eaten = Object.values(state.days || {}).reduce((acc, day) => acc + ['breakfast','lunch','dinner'].filter(s => day[s]?.status === 'eaten').length, 0);
   const pantryCount = (state.pantry || []).length;
   const customCount = (state.customMeals || []).length;
+  // Last 14 days of eaten meals for a simple trend
+  const trend = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    const day = state.days[key] || {};
+    const count = ['breakfast','lunch','dinner'].filter(s => day[s]?.status === 'eaten').length;
+    trend.push(count);
+  }
+  const max = Math.max(1, ...trend);
+  const bars = trend.map(c => `<div style="flex:1;background:var(--primary);height:${(c/max)*60}px;border-radius:3px 3px 0 0;min-width:8px;" title="${c}"></div>`).join('');
   el.innerHTML = `
-    <p>Review</p>
     <div class="card">
-      <p>Days with plans: ${days}</p>
-      <p>Meals marked eaten: ${eaten}</p>
-      <p>Pantry items: ${pantryCount}</p>
-      <p>Custom recipes: ${customCount}</p>
+      <p>Days with plans: <strong>${days}</strong></p>
+      <p>Meals marked eaten: <strong>${eaten}</strong></p>
+      <p>Pantry items: <strong>${pantryCount}</strong></p>
+      <p>Custom recipes: <strong>${customCount}</strong></p>
+    </div>
+    <div class="card">
+      <h3>Eaten meals (last 14 days)</h3>
+      <div style="display:flex;align-items:flex-end;gap:4px;height:70px;">${bars}</div>
+      <p style="font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">Each bar is one day.</p>
     </div>
     <p><small>Local-only insights. No data leaves the device.</small></p>
   `;

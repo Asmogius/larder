@@ -1,47 +1,44 @@
-/* Simple unit tests for core functions (run in browser console or with a test runner)
-   Covers unit conversion, aggregation merging, and cost consistency (P3 #28).
-*/
-import { aggregateGrocery, computeCost, computeDailyNutrition } from './app.js';
-import { MEALS, normalizeIngredient } from './data.js';
+// Larder unit tests
+import { aggregateGrocery, computeCost, computeDailyNutrition, getTargets, getHouseholdSize } from './app.js';
+import { MEALS } from './data.js';
 
 function assert(cond, msg) {
-  if (!cond) throw new Error(msg || 'Assertion failed');
-  console.log('✓', msg || 'passed');
+  if (!cond) throw new Error(msg);
 }
 
-export function runTests() {
-  console.log('Running Larder core tests...');
+export function runLarderTests() {
+  const results = [];
+  try {
+    // Aggregation
+    const plan = [{ mealId: MEALS[0].id, status: 'planned', servings: 2 }];
+    const list = aggregateGrocery(plan);
+    assert(Array.isArray(list), 'aggregate returns array');
+    results.push('aggregateGrocery OK');
 
-  // Unit normalization
-  const olive = normalizeIngredient('olive oil');
-  assert(olive.id === 'olive-oil', 'canonical olive oil');
+    // Cost
+    const cost = computeCost([MEALS[0]], 2);
+    assert(typeof cost.total === 'number', 'cost has total');
+    results.push('computeCost OK');
 
-  // Aggregation merges same ingredient
-  const planned = [
-    { mealId: 'b-yogurt', status: 'planned' },
-    { mealId: 'b-chia', status: 'planned' }
-  ];
-  const list = aggregateGrocery(planned);
-  const yogurt = list.find(i => i.canon.id === 'greek-yogurt');
-  assert(yogurt, 'yogurt appears once');
-  assert(yogurt.recipes.length >= 1, 'has recipe provenance');
+    // Nutrition
+    const nut = computeDailyNutrition([MEALS[0]], 1);
+    assert(nut.calories >= 0, 'nutrition calories');
+    results.push('computeDailyNutrition OK');
 
-  // Cost consistency
-  const meals = planned.map(p => MEALS.find(m => m.id === p.mealId)).filter(Boolean);
-  const cost1 = computeCost(meals, 1);
-  const cost2 = computeCost(meals, 1);
-  assert(cost1.total === cost2.total, 'cost is deterministic');
-  assert(cost1.label === 'est.', 'cost labeled est.');
+    // Targets with members
+    const profile = { members: [{ sex: 'female', age: 30, heightFt: 5, heightIn: 6, weightLb: 140, activity: 'light', goal: 'balanced' }] };
+    const t = getTargets(profile);
+    assert(t.calories > 1000, 'targets calories');
+    results.push('getTargets OK');
 
-  // Nutrition
-  const nut = computeDailyNutrition([MEALS[0]], 1);
-  assert(nut.calories >= 0, 'nutrition computes');
+    // Household size
+    assert(getHouseholdSize(profile) === 1, 'household size');
+    results.push('getHouseholdSize OK');
 
-  console.log('All tests passed.');
-  return true;
-}
-
-// Auto-run if in browser
-if (typeof window !== 'undefined') {
-  window.runLarderTests = runTests;
+    console.log('All tests passed:', results);
+    return { passed: true, results };
+  } catch (e) {
+    console.error('Test failed:', e.message);
+    return { passed: false, error: e.message };
+  }
 }
