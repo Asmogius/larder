@@ -153,7 +153,7 @@ function renderToday() {
       <h3>If this day stands</h3>
       <p>Calories ${nut.calories} / ${targets.calories} · Protein ${nut.protein}g / ${targets.protein}g · Carbs ${nut.carbs}g / ${targets.carbs}g · Fat ${nut.fat}g / ${targets.fat}g</p>
       <p>Cost ${cost.total.toFixed(2)} ${cost.label}</p>
-      <button id="suggest-btn">Suggest open meals</button>${!planned.length ? '<p class="card" style="margin-top:1rem;">No meals planned yet. Use Suggest or add one above.</p>' : ''}
+      <button id="suggest-btn">Suggest open meals</button>${!planned.length ? '<div class="empty"><strong>Nothing planned yet</strong>Use Suggest or add a meal above.</div>' : ''}
     </aside>
   `;
   // Mobile: tap meal name opens sheet
@@ -242,7 +242,7 @@ function renderShop() {
   el.innerHTML = `
     <p>Grocery list · ${total.total.toFixed(2)} ${total.label} · Next 7 days</p>
     <ul style="list-style:none; padding:0;">
-      ${list.map((item, idx) => `<li class="card" style="margin-bottom:0.5rem;"><label><input type="checkbox" data-idx="${idx}"> ${item.display} ${item.canon.name}</label> <small style="color:var(--muted);">(${item.expanded})</small> <button data-add-pantry="${idx}" style="margin-left:0.5rem; font-size:0.8rem;">Add to pantry</button> <input type="number" data-price="${item.canon.id}" placeholder="price est." step="0.01" style="width:80px; margin-left:0.5rem;" value="${((state.prices || {})[item.canon.id] || 0) / 100 || ''}"></li>`).join('') || '<li>No planned meals in the next 7 days.</li>'}
+      ${list.map((item, idx) => `<li class="card" style="margin-bottom:0.5rem;"><label><input type="checkbox" data-idx="${idx}"> ${item.display} ${item.canon.name}</label> <small style="color:var(--muted);">(${item.expanded})</small> <button data-add-pantry="${idx}" style="margin-left:0.5rem; font-size:0.8rem;">Add to pantry</button> <input type="number" data-price="${item.canon.id}" placeholder="price est." step="0.01" style="width:80px; margin-left:0.5rem;" value="${((state.prices || {})[item.canon.id] || 0) / 100 || ''}"></li>`).join('') || '<li class="empty"><strong>List is clear</strong>Plan some meals to see groceries here.</li>'}
     </ul>
     <button id="add-manual">Add manual item</button>
     <button id="copy-list">Copy list</button>
@@ -475,7 +475,7 @@ function renderMeals() {
       <button type="button" id="cancel-import">Cancel</button>
       <div id="import-result"></div>
     </div>
-    <div>${filtered.map(m => `<div class="card"><h3>${m.name}${m.custom ? ' <small>(Yours)</small>' : ''}</h3><p>${m.blurb || ''}</p><small>${m.totalMin || '?'} min · $${((m.centsPerServing || 200)/100).toFixed(2)} est. · ${m.slot}</small></div>`).join('') || '<p class="card">No recipes match.</p>'}</div>
+    <div>${filtered.map(m => `<div class="card"><h3>${m.name}${m.custom ? ' <small>(Yours)</small>' : ''}</h3><p>${m.blurb || ''}</p><small>${m.totalMin || '?'} min · $${((m.centsPerServing || 200)/100).toFixed(2)} est. · ${m.slot}</small></div>`).join('') || '<div class="empty"><strong>No recipes match</strong>Try a different search.</div>'}</div>
   `;
   document.getElementById('meal-search')?.addEventListener('input', () => renderMeals());
   document.getElementById('new-recipe')?.addEventListener('click', () => {
@@ -737,7 +737,7 @@ function renderPantry() {
         <br><small>Location: ${item.location || 'pantry'} · Added ${new Date(item.added).toLocaleDateString()}${item.expiry ? ` · Expires ${new Date(item.expiry).toLocaleDateString()}` : ''}</small>
         <button data-remove="${item.id}" style="margin-top:0.5rem;">Remove</button>
       </div>
-    `).join('') : '<p class="card">Pantry is empty. Add items from the Shop list or scan a receipt.</p>'}
+    `).join('') : '<div class="empty"><strong>Pantry is empty</strong>Add items from Shop or scan a receipt.</div>'}
     <p><small>Cooking a meal can deduct ingredients (foundation ready).</small></p>
   `;
   document.getElementById('find-meals')?.addEventListener('click', () => {
