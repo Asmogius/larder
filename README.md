@@ -12,6 +12,8 @@ A private, local-only meal planner: plan your week, get a live shopping list, tr
 
 **Updating:** download the newest `larder.apk` the same way and install it over the old one. Your plans, recipes and pantry are kept.
 
+**If you see "App not installed as package conflicts with an existing package":** the old app was signed with a different key. Uninstall the existing Larder app first (Settings → Apps → Larder → Uninstall), then install the new APK. Your data is stored locally and will be lost on uninstall; export a backup from Settings first if you want to keep it. After this one-time uninstall, future updates will install over the existing app.
+
 **Requirements:** Android 6.0 or newer. iPhone isn't supported as an app yet.
 
 ---
