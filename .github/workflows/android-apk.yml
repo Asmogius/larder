@@ -8,7 +8,7 @@ on:
       - ".github/workflows/android-apk.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -37,11 +37,28 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/larder.apk
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: larder-debug-apk
-          path: capacitor/android/app/build/outputs/apk/debug/app-debug.apk
+          path: capacitor/android/app/build/outputs/apk/debug/larder.apk
           if-no-files-found: error
           retention-days: 7
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Larder (latest)
+          body: |
+            Latest Android APK (debug-signed).
+            Download **larder.apk** and install on your phone. See README for install steps.
+            Your plans, recipes, and pantry are kept when updating.
+          files: capacitor/android/app/build/outputs/apk/debug/larder.apk
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
