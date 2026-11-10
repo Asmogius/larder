@@ -211,6 +211,8 @@ function sampleBannerHtml() {
     <p><strong>Targets are a sample:</strong> 5′6″, 150 lb, lightly active. Set your own height, weight, and activity in Settings for accurate daily goals.</p>
   </div>`;
 }
+
+function todaySummaryHtml() {
   const today = getTodayKey();
   const day = state.days[today] || {};
   const entries = SLOTS.map(s => day[s]).filter(e => e && e.status !== 'skipped');
