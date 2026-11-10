@@ -85,7 +85,7 @@ function planChange(label, mutate, message) {
 
 /* ---------- routing ---------- */
 const ROUTE_ALIASES = { today: 'planner', week: 'planner', meals: 'recipes', more: 'settings', book: 'recipes' };
-const PAGES = ['planner', 'recipes', 'shop', 'pantry', 'review', 'settings'];
+const PAGES = ['planner', 'recipes', 'shop', 'pantry', 'review', 'settings', 'ingredients'];
 let currentPage = 'planner';
 let currentParam = null;
 
@@ -128,6 +128,7 @@ function renderPage(page, param) {
   if (page === 'settings') renderSettings();
   if (page === 'pantry') renderPantry();
   if (page === 'review') renderReview();
+  if (page === 'ingredients') renderIngredients();
 }
 
 /* ---------- bottom sheet ---------- */
@@ -203,7 +204,13 @@ function slotHtml(date, slot, today) {
   </div>`;
 }
 
-function todaySummaryHtml() {
+function sampleBannerHtml() {
+  if (state.ui?.bannerDismissed) return '';
+  return `<div class="card notice sample-banner" role="status" id="sample-banner">
+    <button type="button" class="banner-close" id="dismiss-banner" aria-label="Dismiss sample targets notice">×</button>
+    <p><strong>Targets are a sample:</strong> 5′6″, 150 lb, lightly active. Set your own height, weight, and activity in Settings for accurate daily goals.</p>
+  </div>`;
+}
   const today = getTodayKey();
   const day = state.days[today] || {};
   const entries = SLOTS.map(s => day[s]).filter(e => e && e.status !== 'skipped');
@@ -221,11 +228,16 @@ function todaySummaryHtml() {
     const e = day[slot];
     if (!e) return `<li class="today-row"><span class="slot-label">${slot}</span><span class="slot-name slot-empty">Open</span>
       <button type="button" class="secondary small" data-today-add="${slot}">Add</button></li>`;
-    const st = e.status === 'eaten' ? '<span class="badge ok">Eaten</span>' : e.status === 'skipped' ? '<span class="badge muted">Skipped</span>' : '';
+    const st = e.status === 'eaten' ? '<span class="badge ok">Eaten</span>' : e.status === 'skipped' ? '<span class="badge muted">Skipped</span>' : (e.leftover ? '<span class="badge">Leftover</span>' : '');
+    const meal = findMeal(e.mealId);
     return `<li class="today-row"><span class="slot-label">${slot}</span>
       <button type="button" class="linkish slot-name" data-today-open="${slot}">${escapeHtml(mealName(e))}</button> ${st}
-      <span class="today-actions">${e.status === 'planned' || !e.status ? `<button type="button" class="small" data-today-ate="${slot}">We ate this</button>
-      <button type="button" class="secondary small" data-today-skip="${slot}">Skip</button>` : `<button type="button" class="secondary small" data-today-reset="${slot}">Undo status</button>`}</span></li>`;
+      <span class="today-actions">
+        ${meal && (e.status === 'planned' || !e.status) ? `<button type="button" class="small" data-today-cook="${slot}">Cook</button>` : ''}
+        ${e.status === 'planned' || !e.status ? `<button type="button" class="small" data-today-ate="${slot}">We ate this</button>
+        <button type="button" class="secondary small" data-today-leftover="${slot}">Leftover</button>
+        <button type="button" class="secondary small" data-today-skip="${slot}">Skip</button>` : `<button type="button" class="secondary small" data-today-reset="${slot}">Undo status</button>`}
+      </span></li>`;
   }).join('');
   return `<section class="card today-card" aria-labelledby="today-h">
     <h3 id="today-h">Today · ${fmtDay(today, { weekday: 'long', month: 'long', day: 'numeric' })}</h3>
@@ -283,6 +295,7 @@ function renderPlanner() {
         </div>` : '<p class="muted">Tap a day to see and edit its meals.</p>'}`;
   }
   el.innerHTML = `
+    ${sampleBannerHtml()}
     ${todaySummaryHtml()}
     <div class="planner-toolbar">
       <div class="segmented" role="group" aria-label="Calendar view">
@@ -303,12 +316,24 @@ function renderPlanner() {
 }
 
 function wirePlanner(el) {
+  el.querySelector('#dismiss-banner')?.addEventListener('click', () => {
+    state.ui = state.ui || {};
+    state.ui.bannerDismissed = true;
+    saveState();
+    el.querySelector('#sample-banner')?.remove();
+  });
   const today = getTodayKey();
   // Today summary
   el.querySelectorAll('[data-today-add]').forEach(b => b.addEventListener('click', () => openRecipePicker(today, b.dataset.todayAdd)));
   el.querySelectorAll('[data-today-open]').forEach(b => b.addEventListener('click', () => openSlotSheet(today, b.dataset.todayOpen)));
   el.querySelectorAll('[data-today-ate]').forEach(b => b.addEventListener('click', () =>
     planChange('ate', () => markEatenAndDeduct(today, b.dataset.todayAte), 'Marked eaten and deducted from pantry')));
+  el.querySelectorAll('[data-today-cook]').forEach(b => b.addEventListener('click', () => {
+    const meal = findMeal(state.days[today]?.[b.dataset.todayCook]?.mealId);
+    if (meal) openCookMode(meal);
+  }));
+  el.querySelectorAll('[data-today-leftover]').forEach(b => b.addEventListener('click', () =>
+    planChange('leftover', () => planLeftover(today, b.dataset.todayLeftover), `Leftover planned for ${fmtDay(addDays(today, 1))}`)));
   el.querySelectorAll('[data-today-skip]').forEach(b => b.addEventListener('click', () =>
     planChange('skip', () => { state.days[today][b.dataset.todaySkip].status = 'skipped'; }, 'Meal skipped')));
   el.querySelectorAll('[data-today-reset]').forEach(b => b.addEventListener('click', () =>
@@ -553,9 +578,14 @@ function renderShop() {
     ${need.length ? `<ul class="shop-list">${rows}</ul>` : planned.length ? '<div class="empty"><strong>List is clear</strong>Everything for this week is already in your pantry.</div>' : ''}
     <div class="card">
       <h3>Extra items</h3>
-      <ul class="shop-list">${manual.map((m, i) => `<li class="shop-item"><span>${escapeHtml(m.name)}</span> <button type="button" class="secondary small" data-del-manual="${i}" aria-label="Remove ${escapeHtml(m.name)}">Remove</button></li>`).join('') || '<li class="muted">None yet.</li>'}</ul>
-      <form id="manual-form" class="inline-field"><label for="manual-name" class="sr-only">Extra item</label>
-        <input id="manual-name" placeholder="e.g. paper towels" autocomplete="off"><button type="submit">Add</button></form>
+      <ul class="shop-list">${manual.map((m, i) => `<li class="shop-item"><span>${escapeHtml(m.name)}${m.unit ? ` (${escapeHtml(m.unit)})` : ''}</span> <button type="button" class="secondary small" data-del-manual="${i}" aria-label="Remove ${escapeHtml(m.name)}">Remove</button></li>`).join('') || '<li class="muted">None yet.</li>'}</ul>
+      <form id="manual-form" class="inline-field">
+        <label for="manual-name" class="sr-only">Add ingredient</label>
+        <input id="manual-name" placeholder="Search ingredients (e.g. oats, chicken)…" autocomplete="off" list="ingredient-suggestions">
+        <datalist id="ingredient-suggestions"></datalist>
+        <button type="submit">Add</button>
+      </form>
+      <p class="muted small-text">Suggestions come from the ingredient database. You can also type a custom name.</p>
     </div>
     ${have.length ? `<details class="card"><summary>Already in pantry (${have.length})</summary><ul>${have.map(i => `<li>${escapeHtml(i.display)} ${escapeHtml(i.canon.name)}</li>`).join('')}</ul></details>` : ''}
     <div class="button-row">
@@ -598,12 +628,32 @@ function renderShop() {
     renderShop();
     showUndoToast(`Removed ${removed.name}`, () => { state.manualItems.splice(i, 0, removed); saveState(); rerender(); });
   }));
+  el.querySelector('#manual-name')?.addEventListener('input', e => {
+    const q = e.target.value.trim();
+    const list = el.querySelector('#ingredient-suggestions');
+    if (!list || q.length < 2) { if (list) list.innerHTML = ''; return; }
+    const db = searchIngredients(q, 6);
+    const custom = (state.customIngredients || []).filter(c => c.name.toLowerCase().includes(q.toLowerCase())).slice(0, 4);
+    const options = [
+      ...custom.map(c => `<option value="${escapeHtml(c.name)}">Custom: ${escapeHtml(c.name)}</option>`),
+      ...db.map(m => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} (${escapeHtml(m.aisle || '')})</option>`)
+    ];
+    list.innerHTML = options.join('');
+  });
   el.querySelector('#manual-form').addEventListener('submit', e => {
     e.preventDefault();
     const name = el.querySelector('#manual-name').value.trim();
     if (!name) return;
+    const customMatch = (state.customIngredients || []).find(c => c.name.toLowerCase() === name.toLowerCase());
+    const match = customMatch || searchIngredients(name, 1)[0];
     state.manualItems = state.manualItems || [];
-    state.manualItems.push({ name, qty: 1, unit: '' });
+    state.manualItems.push({
+      name: match ? match.name : name,
+      unit: match ? (match.unit || '') : '',
+      aisle: match ? (match.aisle || 'other') : 'other',
+      fromDb: !!match && !customMatch,
+      custom: !!customMatch
+    });
     saveState();
     renderShop();
     document.getElementById('manual-name')?.focus();
@@ -622,7 +672,7 @@ function renderShop() {
 }
 
 /* ---------- recipes ---------- */
-const recipeFilter = { q: '', source: 'all', slot: 'all' };
+const recipeFilter = { q: '', source: 'all', slot: 'all', sort: 'name', quick: false, keto: false };
 let editingId = null; // null = closed, '' = new, id = editing
 function recipeMatches(m, term) {
   if (!term) return true;
@@ -630,14 +680,26 @@ function recipeMatches(m, term) {
 }
 function filteredRecipes() {
   const term = recipeFilter.q.trim().toLowerCase();
-  return getAllMeals().filter(m => {
+  let list = getAllMeals().filter(m => {
     if (!recipeMatches(m, term)) return false;
     const src = getRecipeSource(m);
     if (recipeFilter.source === 'favorites' && !isFavorite(m.id)) return false;
     if (['builtin', 'custom', 'imported'].includes(recipeFilter.source) && src !== recipeFilter.source) return false;
     if (recipeFilter.slot !== 'all' && m.slot !== recipeFilter.slot) return false;
+    if (recipeFilter.quick && (m.totalMin || 999) > 30) return false;
+    if (recipeFilter.keto && m.keto === false) return false;
     return true;
   });
+  const sort = recipeFilter.sort || 'name';
+  list.sort((a, b) => {
+    if (sort === 'name') return a.name.localeCompare(b.name);
+    if (sort === 'calories') return (a.calories || 0) - (b.calories || 0);
+    if (sort === 'protein') return (b.protein || 0) - (a.protein || 0);
+    if (sort === 'time') return (a.totalMin || 999) - (b.totalMin || 999);
+    if (sort === 'cost') return (a.centsPerServing || 200) - (b.centsPerServing || 200);
+    return 0;
+  });
+  return list;
 }
 function recipeCardHtml(m) {
   const src = getRecipeSource(m);
@@ -676,13 +738,50 @@ function recipeFormHtml(m) {
       <label>Calories per serving (optional) <input name="calories" type="number" min="0" inputmode="numeric" value="${escapeHtml(v.calories || '')}"></label><div class="error" data-field="calories"></div>
       <label>Protein g per serving (optional) <input name="protein" type="number" min="0" inputmode="numeric" value="${escapeHtml(v.protein || '')}"></label><div class="error" data-field="protein"></div>
       <label>Blurb <textarea name="blurb" rows="2">${escapeHtml(v.blurb || '')}</textarea></label>
+      <div class="ingredient-adder">
+        <label>Add ingredient
+          <input id="ing-add-search" type="search" placeholder="Search database or custom (e.g. oats)…" autocomplete="off" list="form-ing-suggestions">
+          <datalist id="form-ing-suggestions"></datalist>
+        </label>
+        <button type="button" id="ing-add-btn" class="secondary small">Add line</button>
+      </div>
       <label>Ingredients (one per line, e.g. “1 1/2 cup rolled oats”) <textarea name="ingredients" rows="5">${escapeHtml(ingText)}</textarea></label>
+      <p class="muted small-text">Search suggests from the ingredient database and your custom ingredients. You can still type free-form lines.</p>
       <label>Steps (one per line) <textarea name="steps" rows="5">${escapeHtml((v.steps || []).join('\n'))}</textarea></label>
       <div class="button-row"><button type="submit">Save recipe</button> <button type="button" class="secondary" id="cancel-recipe">Cancel</button></div>
     </form></div>`;
 }
 function wireRecipeForm(root, existing, onDone) {
   root.querySelector('#cancel-recipe')?.addEventListener('click', () => onDone(null));
+
+  // Ingredient search helper
+  const searchInput = root.querySelector('#ing-add-search');
+  const suggestions = root.querySelector('#form-ing-suggestions');
+  const textarea = root.querySelector('[name="ingredients"]');
+  searchInput?.addEventListener('input', () => {
+    const q = searchInput.value.trim();
+    if (!suggestions || q.length < 2) { if (suggestions) suggestions.innerHTML = ''; return; }
+    const db = searchIngredients(q, 6);
+    const custom = (state.customIngredients || []).filter(c => c.name.toLowerCase().includes(q.toLowerCase())).slice(0, 4);
+    suggestions.innerHTML = [
+      ...custom.map(c => `<option value="${escapeHtml(c.name)}">Custom: ${escapeHtml(c.name)}</option>`),
+      ...db.map(m => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} (${escapeHtml(m.unit || m.aisle || '')})</option>`)
+    ].join('');
+  });
+  root.querySelector('#ing-add-btn')?.addEventListener('click', () => {
+    const name = searchInput?.value.trim();
+    if (!name || !textarea) return;
+    const customMatch = (state.customIngredients || []).find(c => c.name.toLowerCase() === name.toLowerCase());
+    const match = customMatch || searchIngredients(name, 1)[0];
+    const unit = match ? (match.unit || '') : '';
+    const line = unit ? `1 ${unit} ${match.name}` : `1 ${match ? match.name : name}`;
+    const current = textarea.value.trim();
+    textarea.value = current ? current + '\n' + line : line;
+    searchInput.value = '';
+    if (suggestions) suggestions.innerHTML = '';
+    textarea.focus();
+  });
+
   root.querySelector('#recipe-form-el')?.addEventListener('submit', e => {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(e.target));
@@ -736,19 +835,34 @@ function renderRecipes() {
     <div id="recipe-form-slot"></div>
     <div id="import-panel" class="card" hidden>
       <h3>Import recipe</h3>
-      <p>Paste a recipe URL, raw text, or the page HTML (schema.org/Recipe preferred).</p>
+      <p>Paste a recipe URL (long tracking links are cleaned automatically) or the full recipe text. Schema.org/Recipe pages work best. Browser fetch is often blocked by CORS — pasting text is more reliable.</p>
       <label for="import-text" class="sr-only">Recipe URL or text</label>
-      <textarea id="import-text" rows="4" placeholder="https://example.com/recipe or paste recipe text"></textarea>
+      <textarea id="import-text" rows="5" placeholder="https://example.com/recipe?utm_source=... or paste the full ingredients and steps"></textarea>
       <div class="button-row"><button type="button" id="do-import">Import</button> <button type="button" class="secondary" id="cancel-import">Cancel</button></div>
       <div id="import-result" aria-live="polite"></div>
     </div>
     <label for="meal-search" class="sr-only">Search recipes</label>
     <input id="meal-search" type="search" placeholder="Search name or ingredient" value="${escapeHtml(recipeFilter.q)}" autocomplete="off">
+    <div class="filter-row">
+      <label>Sort
+        <select id="recipe-sort">
+          <option value="name" ${recipeFilter.sort === 'name' ? 'selected' : ''}>Name</option>
+          <option value="calories" ${recipeFilter.sort === 'calories' ? 'selected' : ''}>Calories (low)</option>
+          <option value="protein" ${recipeFilter.sort === 'protein' ? 'selected' : ''}>Protein (high)</option>
+          <option value="time" ${recipeFilter.sort === 'time' ? 'selected' : ''}>Time (quickest)</option>
+          <option value="cost" ${recipeFilter.sort === 'cost' ? 'selected' : ''}>Cost (low)</option>
+        </select>
+      </label>
+    </div>
     <div class="chips" role="group" aria-label="Filter by source">
       ${chip('source', 'all', 'All')}${chip('source', 'builtin', 'Built-in')}${chip('source', 'custom', 'Custom')}${chip('source', 'imported', 'Imported')}${chip('source', 'favorites', '★ Favorites')}
     </div>
     <div class="chips" role="group" aria-label="Filter by meal">
       ${chip('slot', 'all', 'Any meal')}${chip('slot', 'breakfast', 'Breakfast')}${chip('slot', 'lunch', 'Lunch')}${chip('slot', 'dinner', 'Dinner')}
+    </div>
+    <div class="chips" role="group" aria-label="More filters">
+      <button type="button" class="chip" data-toggle="quick" aria-pressed="${recipeFilter.quick}">Under 30 min</button>
+      <button type="button" class="chip" data-toggle="keto" aria-pressed="${recipeFilter.keto}">Keto-friendly</button>
     </div>
     <p id="recipe-count" class="muted" aria-live="polite"></p>
     <div id="recipe-results"></div>`;
@@ -758,6 +872,16 @@ function renderRecipes() {
   el.querySelectorAll('[data-chip]').forEach(b => b.addEventListener('click', () => {
     recipeFilter[b.dataset.chipGroup] = b.dataset.chip;
     el.querySelectorAll(`[data-chip-group="${b.dataset.chipGroup}"]`).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    drawRecipeResults();
+  }));
+  el.querySelector('#recipe-sort')?.addEventListener('change', e => {
+    recipeFilter.sort = e.target.value;
+    drawRecipeResults();
+  });
+  el.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => {
+    const key = b.dataset.toggle;
+    recipeFilter[key] = !recipeFilter[key];
+    b.setAttribute('aria-pressed', String(recipeFilter[key]));
     drawRecipeResults();
   }));
   const formSlot = el.querySelector('#recipe-form-slot');
@@ -787,10 +911,11 @@ async function runImport(el) {
   let parsed;
   try { parsed = await parseRecipeImport(text); } catch { parsed = null; }
   if (!parsed || !parsed.name || (!parsed.ingredients.length && !(parsed.steps || []).length)) {
-    resultEl.innerHTML = `<p role="alert">Could not find a recipe in that. ${escapeHtml(parsed?.blurb && /URL fetch/.test(parsed.blurb) ? parsed.blurb : 'Try pasting the full recipe text (with an “Ingredients” heading), or the page HTML.')}</p>`;
+    const hint = parsed?.blurb || 'Try pasting the full recipe text (with an “Ingredients” heading), or the page HTML.';
+    resultEl.innerHTML = `<p role="alert">Could not find a recipe in that. ${escapeHtml(hint)}</p>`;
     return;
   }
-  const sourceUrl = /^https?:\/\//i.test(text) ? text : undefined;
+  const sourceUrl = parsed.sourceUrl || (/^https?:\/\//i.test(text) ? cleanRecipeUrl(text) : undefined);
   resultEl.innerHTML = `
     <div class="card">
       <h4>Review import</h4>
@@ -802,6 +927,7 @@ async function runImport(el) {
       <ul>${parsed.ingredients.map(i => `<li>${escapeHtml(smartNumber(i.qty || 1))} ${escapeHtml(i.unit || '')} ${escapeHtml(i.name)}</li>`).join('')}</ul>
       <p><strong>Steps (${(parsed.steps || []).length})</strong></p>
       <ol>${(parsed.steps || []).map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ol>
+      ${sourceUrl ? `<p class="muted small-text">Source (cleaned): <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(sourceUrl)}</a></p>` : ''}
       <div class="button-row"><button type="button" id="save-import">Save recipe</button> <button type="button" class="secondary" id="cancel-import-review">Cancel</button></div>
     </div>`;
   resultEl.querySelector('#cancel-import-review').addEventListener('click', () => { el.querySelector('#import-panel').hidden = true; resultEl.innerHTML = ''; });
@@ -1021,6 +1147,7 @@ function renderSettings() {
     </div>
     <div class="card">
       <h3>More</h3>
+      <p><a href="#ingredients">Ingredients →</a></p>
       <p><a href="#review">Review your history →</a></p>
       <p><a href="#recipes">Recipes →</a></p>
     </div>
@@ -1145,6 +1272,34 @@ function decodeEntities(str) {
   t.innerHTML = String(str ?? '');
   return t.value;
 }
+function cleanRecipeUrl(raw) {
+  try {
+    const u = new URL(raw.trim());
+    // Strip common tracking / session parameters that make URLs very long
+    const drop = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id',
+                  'fbclid', 'gclid', 'gclsrc', 'dclid', 'msclkid', 'mc_eid', 'mc_cid',
+                  '_ga', '_gl', 'ref', 'ref_src', 'igshid', 'igsh', 'si', 'feature'];
+    for (const k of [...u.searchParams.keys()]) {
+      if (drop.includes(k.toLowerCase()) || k.toLowerCase().startsWith('utm_')) u.searchParams.delete(k);
+    }
+    // Prefer https, remove trailing slash on path if present
+    u.protocol = 'https:';
+    if (u.pathname.endsWith('/') && u.pathname.length > 1) u.pathname = u.pathname.slice(0, -1);
+    return u.toString();
+  } catch {
+    return raw.trim();
+  }
+}
+
+function slugToName(url) {
+  try {
+    const path = new URL(url).pathname.split('/').filter(Boolean).pop() || '';
+    return path.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim() || 'Imported recipe';
+  } catch {
+    return 'Imported recipe';
+  }
+}
+
 async function parseRecipeImport(input) {
   let html = '';
   let name = '';
@@ -1152,22 +1307,31 @@ async function parseRecipeImport(input) {
   let steps = [];
   let servings = 2;
   let blurb = '';
+  let sourceUrl = '';
 
-  if (/^https?:\/\//i.test(input)) {
-    // Direct fetch only. In the Capacitor Android APK, CapacitorHttp (enabled in config)
-    // patches fetch to use native HTTP, bypassing CORS. In the browser this may fail.
+  const trimmed = input.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    sourceUrl = cleanRecipeUrl(trimmed);
+    name = slugToName(sourceUrl);
+    // Direct fetch. Capacitor Android (CapacitorHttp) bypasses CORS; browsers often cannot.
     try {
-      const res = await fetch(input, { headers: { 'Accept': 'text/html' } });
+      const res = await fetch(sourceUrl, { headers: { 'Accept': 'text/html,application/xhtml+xml' }, redirect: 'follow' });
       if (res.ok) {
         html = await res.text();
       }
     } catch (e) { /* fall through */ }
-    if (!html || html.length < 200) {
-      name = input.split('/').filter(Boolean).pop()?.replace(/[-_]/g, ' ') || 'Imported recipe';
-      return { name, ingredients: [], steps: [], servings: 2, blurb: 'URL fetch blocked in the browser. In the Android app this works natively. Or paste the recipe text.' };
+    if (!html || html.length < 400) {
+      return {
+        name,
+        ingredients: [],
+        steps: [],
+        servings: 2,
+        blurb: 'Could not fetch the page (common with long tracking URLs or browser CORS). Try pasting the full recipe text instead, or open the link in the Android app.',
+        sourceUrl
+      };
     }
   } else {
-    html = input;
+    html = trimmed;
   }
 
   // 1. JSON-LD (schema.org Recipe), including @graph and arrays
@@ -1200,7 +1364,7 @@ async function parseRecipeImport(input) {
           return [];
         }).map(s => decodeEntities(String(s).replace(/<[^>]+>/g, ' ')).trim()).filter(Boolean);
         name = decodeEntities(name); blurb = decodeEntities(blurb);
-        if (name && ingredients.length) return { name, ingredients, steps, servings, blurb };
+        if (name && ingredients.length) return { name, ingredients, steps, servings, blurb, sourceUrl };
       }
     } catch (e) { /* continue */ }
   }
@@ -1215,26 +1379,31 @@ async function parseRecipeImport(input) {
   const stepMatches = [...html.matchAll(/itemprop=["']recipeInstructions["'][^>]*>([^<]+)/gi)];
   if (stepMatches.length) steps = stepMatches.map(m => decodeEntities(m[1].trim())).filter(Boolean);
 
-  // 3. Plain text / paste heuristics
+  // 3. Plain text / paste heuristics (improved for messy pastes)
   if (!ingredients.length) {
-    const lines = html.replace(/<(script|style)[\s\S]*?<\/\1>/gi, '').split(/\n|<br\s*\/?>|<\/(?:p|li|div|h\d)>/i).map(l => decodeEntities(l.replace(/<[^>]+>/g, '')).trim()).filter(Boolean);
-    if (!name && lines[0]) name = lines[0];
+    const lines = html
+      .replace(/<(script|style)[\s\S]*?<\/\1>/gi, '')
+      .split(/\n|<br\s*\/?>|<\/(?:p|li|div|h\d)>/i)
+      .map(l => decodeEntities(l.replace(/<[^>]+>/g, '')).trim())
+      .filter(Boolean);
+    if (!name && lines[0]) name = lines[0].slice(0, 80);
     let mode = 'none';
     for (const line of lines) {
       const lower = line.toLowerCase();
-      if (/ingredient/.test(lower)) { mode = 'ing'; continue; }
-      if (/instruction|direction|method|step/.test(lower)) { mode = 'step'; continue; }
+      if (/ingredient/.test(lower) && lower.length < 40) { mode = 'ing'; continue; }
+      if (/(instruction|direction|method|step)/.test(lower) && lower.length < 40) { mode = 'step'; continue; }
       if (mode === 'step' || /^\d+[\.\)]\s/.test(line)) {
-        steps.push(line.replace(/^\d+[\.\)]\s*/, ''));
-      } else if (mode === 'ing' || /^\d/.test(line)) {
+        const cleaned = line.replace(/^\d+[\.\)]\s*/, '').trim();
+        if (cleaned) steps.push(cleaned);
+      } else if (mode === 'ing' || /^\d/.test(line) || /^(½|¼|¾|\d)/.test(line)) {
         const parsedIng = parseIngredientLine(line);
-        if (parsedIng.name) ingredients.push(parsedIng);
+        if (parsedIng.name && parsedIng.name.length > 1) ingredients.push(parsedIng);
       }
     }
   }
 
   if (!name) name = 'Imported recipe';
-  return { name, ingredients, steps, servings, blurb };
+  return { name, ingredients, steps, servings, blurb, sourceUrl };
 }
 
 
@@ -1503,16 +1672,20 @@ function openCookMode(meal) {
   overlay.setAttribute('aria-modal', 'true');
   overlay.setAttribute('aria-labelledby', 'cook-title');
   overlay.innerHTML = `
-    <h2 id="cook-title">${escapeHtml(meal.name)}</h2>
-    <p>Step <span id="step-num">${step + 1}</span> of ${steps.length}</p>
-    <div id="step-text" class="card" aria-live="polite">${escapeHtml(steps[step])}</div>
-    <div class="button-row">
-      <button type="button" id="prev-step" class="secondary">← Previous</button>
-      <button type="button" id="next-step">Next →</button>
-      <button type="button" id="start-timer" class="secondary">Start 5 min timer</button>
-      <span id="timer-display" role="timer" aria-live="off"></span>
+    <div class="cook-header">
+      <h2 id="cook-title">${escapeHtml(meal.name)}</h2>
+      <button type="button" id="close-cook" class="secondary small" aria-label="Close cook mode">✕</button>
     </div>
-    <button type="button" id="close-cook" class="secondary">Close (Esc)</button>
+    <p class="cook-progress">Step <span id="step-num">${step + 1}</span> of ${steps.length}</p>
+    <div id="step-text" class="card cook-step" aria-live="polite">${escapeHtml(steps[step])}</div>
+    <div class="button-row cook-nav">
+      <button type="button" id="prev-step" class="secondary large-touch">← Previous</button>
+      <button type="button" id="next-step" class="large-touch">Next →</button>
+    </div>
+    <div class="button-row cook-timer">
+      <button type="button" id="start-timer" class="secondary">Start 5 min timer</button>
+      <span id="timer-display" role="timer" aria-live="off" class="timer-display"></span>
+    </div>
   `;
   document.body.appendChild(overlay);
   // Focus trap and initial focus
@@ -1565,6 +1738,86 @@ function openCookMode(meal) {
   closeActiveCook = close;
   // Wake Lock attempt
   if (navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { wakeLock = l; }).catch(() => {});
+}
+
+
+function renderIngredients() {
+  const el = document.getElementById('settings-content') || document.getElementById('main');
+  // Prefer a dedicated section if present; fall back to creating content in settings-content for now
+  let target = document.getElementById('ingredients-content');
+  if (!target) {
+    // Dynamically ensure a section exists for the new page
+    const main = document.getElementById('main');
+    if (main && !document.getElementById('ingredients')) {
+      const sec = document.createElement('section');
+      sec.id = 'ingredients';
+      sec.className = 'page';
+      sec.hidden = true;
+      sec.innerHTML = '<h2 id="ingredients-title" tabindex="-1">Ingredients</h2><div id="ingredients-content"></div>';
+      main.appendChild(sec);
+    }
+    target = document.getElementById('ingredients-content');
+  }
+  if (!target) return;
+
+  const custom = state.customIngredients || [];
+  const q = (state.ui?.ingQuery || '').trim().toLowerCase();
+  const dbMatches = q.length >= 1 ? searchIngredients(q, 30) : [];
+  const customMatches = custom.filter(c => !q || c.name.toLowerCase().includes(q));
+
+  target.innerHTML = `
+    <p class="muted">Search the built-in ingredient database or add your own. Custom ingredients are available in Shop and recipe forms.</p>
+    <label for="ing-search" class="sr-only">Search ingredients</label>
+    <input id="ing-search" type="search" placeholder="Search (e.g. oats, chicken breast)…" value="${escapeHtml(state.ui?.ingQuery || '')}" autocomplete="off">
+    <div class="card">
+      <h3>Add custom ingredient</h3>
+      <form id="custom-ing-form">
+        <label>Name <input name="name" required placeholder="e.g. my special spice mix"></label>
+        <label>Aisle <input name="aisle" placeholder="pantry, produce…"></label>
+        <label>Default unit <input name="unit" placeholder="tsp, cup, each…"></label>
+        <button type="submit">Add custom</button>
+      </form>
+    </div>
+    ${customMatches.length ? `<div class="card"><h3>Your custom ingredients</h3><ul>${customMatches.map((c, i) => `<li>${escapeHtml(c.name)}${c.aisle ? ` <span class="muted">(${escapeHtml(c.aisle)})</span>` : ''} <button type="button" class="secondary small" data-del-custom="${i}">Remove</button></li>`).join('')}</ul></div>` : ''}
+    ${dbMatches.length ? `<div class="card"><h3>From database</h3><ul>${dbMatches.map(m => `<li><strong>${escapeHtml(m.name)}</strong> <span class="muted">${escapeHtml(m.aisle || '')} · ${escapeHtml(m.unit || '')}</span></li>`).join('')}</ul></div>` : q ? '<p class="muted">No database matches.</p>' : '<p class="muted">Type to search the ingredient database.</p>'}
+  `;
+
+  target.querySelector('#ing-search')?.addEventListener('input', e => {
+    state.ui = state.ui || {};
+    state.ui.ingQuery = e.target.value;
+    renderIngredients();
+  });
+  target.querySelector('#custom-ing-form')?.addEventListener('submit', e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const name = String(fd.get('name') || '').trim();
+    if (!name) return;
+    state.customIngredients = state.customIngredients || [];
+    if (state.customIngredients.some(c => c.name.toLowerCase() === name.toLowerCase())) {
+      showUndoToast('Already in your custom ingredients');
+      return;
+    }
+    state.customIngredients.push({ name, aisle: String(fd.get('aisle') || 'other').trim(), unit: String(fd.get('unit') || '').trim() });
+    saveState();
+    showUndoToast(`Added ${name}`);
+    e.target.reset();
+    renderIngredients();
+  });
+  target.querySelectorAll('[data-del-custom]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = Number(btn.dataset.delCustom);
+      const removed = state.customIngredients.splice(i, 1)[0];
+      saveState();
+      showUndoToast(`Removed ${removed.name}`, () => {
+        state.customIngredients.splice(i, 0, removed);
+        saveState();
+        renderIngredients();
+      });
+      renderIngredients();
+    });
+  });
+  // Ensure the page is shown
+  showPage('ingredients', false);
 }
 
 
