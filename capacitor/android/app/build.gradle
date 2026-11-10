@@ -18,7 +18,7 @@ android {
     }
     signingConfigs {
         debug {
-            storeFile file('../larder-debug.keystore')
+            storeFile file('../../larder-debug.keystore')
             storePassword 'larderdebug'
             keyAlias 'larder'
             keyPassword 'larderdebug'
